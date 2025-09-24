@@ -1,0 +1,79 @@
+Elenco del percorso delle cartelle per il volume Disco Dati
+Numero di serie del volume: 3459-92AD
+D:.
+|   747disco-crm.php
+|   alberatura.txt
+|   
++---assets
+|   +---css
+|   |       admin.css
+|   |       excel-scan.css
+|   |       frontend.css
+|   |       
+|   \---js
+|           admin.js
+|           excel-scan.js
+|           frontend.js
+|           
+\---includes
+    |   compatibility-utils.php
+    |   credentials-utils.php
+    |   
+    +---admin
+    |   |   ajax-handlers.php
+    |   |   class-disco747-admin-unified.php
+    |   |   class-disco747-admin.php
+    |   |   class-disco747-settings-helper.php
+    |   |   class-disco747-settings.php
+    |   |   dashboard-sync-preventivi.php
+    |   |   debug-hooks.php
+    |   |   
+    |   \---views
+    |           dashboard-page.php
+    |           dashboard-preventivi.php
+    |           debug-page.php
+    |           dropbox.php
+    |           excel-scan-page.php
+    |           form-preventivo.php
+    |           googledrive.php
+    |           main-page.php
+    |           messages-page.php
+    |           settings-page.php
+    |           settings-page1.php
+    |           stats-page.php
+    |           storage-page.php
+    |           system-page.php
+    |           tools-page.php
+    |           
+    +---communication
+    |       class-disco747-email.php
+    |       class-disco747-messaging.php
+    |       class-disco747-whatsapp.php
+    |       
+    +---core
+    |       class-disco747-auth.php
+    |       class-disco747-config.php
+    |       class-disco747-database.php
+    |       
+    +---frontend
+    |       class-disco747-dashboard.php
+    |       class-disco747-pages.php
+    |       
+    +---generators
+    |       class-disco747-excel.php
+    |       class-disco747-pdf.php
+    |       class-disco747-templates.php
+    |       
+    +---handlers
+    |       class-disco747-ajax.php
+    |       class-disco747-forms.php
+    |       class-disco747-processor.php
+    |       
+    \---storage
+            class-disco747-dropbox.php
+            class-disco747-googledrive-sync.php
+            class-disco747-googledrive.php
+            class-disco747-storage-manager.php
+            dropbox.php
+            googledrive.php
+            
