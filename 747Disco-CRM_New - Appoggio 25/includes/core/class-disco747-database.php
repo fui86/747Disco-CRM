@@ -1,322 +1,468 @@
 <?php
 /**
- * Database Manager - 747 Disco CRM
- * FILE COMPLETO CON METODI PER PREVENTIVI
- * 
- * @package Disco747_CRM
- * @version 11.6.2
+ * Database management class for Disco747 CRM
  */
 
 namespace Disco747_CRM\Core;
 
 if (!defined('ABSPATH')) {
-    exit('Accesso diretto non consentito');
+    exit;
 }
 
 class Disco747_Database {
     
+    private $wpdb;
     private $table_name;
-    private $charset_collate;
-    private $debug_mode = true;
+    private $excel_analysis_table;
     
     public function __construct() {
         global $wpdb;
-        
+        $this->wpdb = $wpdb;
         $this->table_name = $wpdb->prefix . 'disco747_preventivi';
-        $this->charset_collate = $wpdb->get_charset_collate();
-        
-        $this->maybe_create_tables();
+        $this->excel_analysis_table = $wpdb->prefix . 'disco747_excel_analysis';
     }
     
     /**
-     * Crea tabelle se non esistono
+     * Create tables if they don't exist
      */
-    private function maybe_create_tables() {
-        global $wpdb;
+    public function create_tables() {
+        $this->create_preventivi_table();
+        $this->create_excel_analysis_table();
+    }
+    
+    /**
+     * Create main preventivi table
+     */
+    private function create_preventivi_table() {
+        $charset_collate = $this->wpdb->get_charset_collate();
         
-        $sql = "CREATE TABLE IF NOT EXISTS {$this->table_name} (
-            id bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT,
-            data_evento date NOT NULL,
-            tipo_evento varchar(100) NOT NULL,
-            tipo_menu varchar(50) NOT NULL DEFAULT 'Menu 7',
-            numero_invitati int(11) NOT NULL DEFAULT 50,
-            orario_evento varchar(50) DEFAULT '',
-            nome_cliente varchar(200) NOT NULL,
-            telefono varchar(50) DEFAULT '',
-            email varchar(100) DEFAULT '',
-            importo_totale decimal(10,2) NOT NULL DEFAULT 0.00,
-            acconto decimal(10,2) NOT NULL DEFAULT 0.00,
-            omaggio1 varchar(200) DEFAULT '',
-            omaggio2 varchar(200) DEFAULT '',
-            omaggio3 varchar(200) DEFAULT '',
-            extra1 varchar(200) DEFAULT '',
-            extra2 varchar(200) DEFAULT '',
-            extra3 varchar(200) DEFAULT '',
-            stato varchar(20) NOT NULL DEFAULT 'attivo',
-            excel_url text DEFAULT '',
-            pdf_url text DEFAULT '',
-            googledrive_url text DEFAULT '',
-            created_at datetime NOT NULL,
-            created_by bigint(20) UNSIGNED DEFAULT NULL,
-            updated_at datetime NOT NULL,
+        $sql = "CREATE TABLE {$this->table_name} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            nome_referente VARCHAR(100) NOT NULL,
+            cognome_referente VARCHAR(100) NOT NULL,
+            cellulare VARCHAR(20),
+            email VARCHAR(150),
+            tipo_evento VARCHAR(100),
+            data_evento DATE,
+            orario VARCHAR(50),
+            numero_invitati INT,
+            tipo_menu VARCHAR(50),
+            importo DECIMAL(10,2),
+            acconto DECIMAL(10,2),
+            saldo DECIMAL(10,2),
+            omaggio1 VARCHAR(255),
+            omaggio2 VARCHAR(255),
+            omaggio3 VARCHAR(255),
+            extra1_nome VARCHAR(255),
+            extra1_prezzo DECIMAL(10,2),
+            extra2_nome VARCHAR(255),
+            extra2_prezzo DECIMAL(10,2),
+            extra3_nome VARCHAR(255),
+            extra3_prezzo DECIMAL(10,2),
+            drive_file_id VARCHAR(128),
+            pdf_file_id VARCHAR(128),
+            status VARCHAR(50) DEFAULT 'draft',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             PRIMARY KEY (id),
-            KEY data_evento (data_evento),
-            KEY stato (stato)
-        ) {$this->charset_collate};";
+            KEY idx_data_evento (data_evento),
+            KEY idx_status (status)
+        ) $charset_collate;";
         
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
     }
     
     /**
-     * Inserisce nuovo preventivo
+     * Create Excel analysis table
+     */
+    public function create_excel_analysis_table() {
+        $charset_collate = $this->wpdb->get_charset_collate();
+        
+        $sql = "CREATE TABLE {$this->excel_analysis_table} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            file_id VARCHAR(128) NULL,
+            filename VARCHAR(255) NOT NULL,
+            drive_path VARCHAR(512) NULL,
+            modified_time DATETIME NULL,
+            data_evento DATE NULL,
+            tipo_evento VARCHAR(100) NULL,
+            tipo_menu VARCHAR(50) NULL,
+            orario VARCHAR(50) NULL,
+            numero_invitati INT NULL,
+            nome_referente VARCHAR(100) NULL,
+            cognome_referente VARCHAR(100) NULL,
+            cellulare VARCHAR(50) NULL,
+            email VARCHAR(150) NULL,
+            omaggio1 VARCHAR(255) NULL,
+            omaggio2 VARCHAR(255) NULL,
+            omaggio3 VARCHAR(255) NULL,
+            importo DECIMAL(10,2) NULL,
+            acconto DECIMAL(10,2) NULL,
+            saldo DECIMAL(10,2) NULL,
+            extra1_nome VARCHAR(255) NULL,
+            extra1_prezzo DECIMAL(10,2) NULL,
+            extra2_nome VARCHAR(255) NULL,
+            extra2_prezzo DECIMAL(10,2) NULL,
+            extra3_nome VARCHAR(255) NULL,
+            extra3_prezzo DECIMAL(10,2) NULL,
+            analysis_success TINYINT(1) DEFAULT 0,
+            analysis_errors_json LONGTEXT NULL,
+            source VARCHAR(30) DEFAULT 'drive',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            UNIQUE KEY uq_file (file_id),
+            KEY idx_filename (filename),
+            KEY idx_data_evento (data_evento)
+        ) $charset_collate;";
+        
+        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+        dbDelta($sql);
+    }
+    
+    /**
+     * Save Excel analysis data with upsert logic
+     */
+    public function save_excel_analysis(array $data) {
+        // Prepare data with defaults
+        $defaults = [
+            'file_id' => null,
+            'filename' => '',
+            'drive_path' => null,
+            'modified_time' => null,
+            'data_evento' => null,
+            'tipo_evento' => null,
+            'tipo_menu' => null,
+            'orario' => null,
+            'numero_invitati' => null,
+            'nome_referente' => null,
+            'cognome_referente' => null,
+            'cellulare' => null,
+            'email' => null,
+            'omaggio1' => null,
+            'omaggio2' => null,
+            'omaggio3' => null,
+            'importo' => null,
+            'acconto' => null,
+            'saldo' => null,
+            'extra1_nome' => null,
+            'extra1_prezzo' => null,
+            'extra2_nome' => null,
+            'extra2_prezzo' => null,
+            'extra3_nome' => null,
+            'extra3_prezzo' => null,
+            'analysis_success' => 0,
+            'analysis_errors_json' => null,
+            'source' => 'drive'
+        ];
+        
+        $data = array_merge($defaults, $data);
+        
+        // Check for existing record
+        $existing = null;
+        if (!empty($data['file_id'])) {
+            $existing = $this->wpdb->get_row($this->wpdb->prepare(
+                "SELECT * FROM {$this->excel_analysis_table} WHERE file_id = %s",
+                $data['file_id']
+            ), ARRAY_A);
+        }
+        
+        if (!$existing && !empty($data['filename'])) {
+            $existing = $this->wpdb->get_row($this->wpdb->prepare(
+                "SELECT * FROM {$this->excel_analysis_table} WHERE filename = %s",
+                $data['filename']
+            ), ARRAY_A);
+        }
+        
+        if ($existing) {
+            // Update existing - Conservative UPSERT
+            $update_data = [];
+            foreach ($data as $key => $value) {
+                if ($key === 'id') continue;
+                
+                // Only update if new value is not empty and (existing is empty or we have better data)
+                $existing_value = isset($existing[$key]) ? $existing[$key] : null;
+                if (!empty($value) && (empty($existing_value) || $this->is_better_value($value, $existing_value, $key))) {
+                    $update_data[$key] = $value;
+                } elseif ($key === 'updated_at') {
+                    $update_data[$key] = current_time('mysql');
+                }
+            }
+            
+            if (!empty($update_data)) {
+                $result = $this->wpdb->update(
+                    $this->excel_analysis_table,
+                    $update_data,
+                    ['id' => $existing['id']]
+                );
+                return $result !== false ? $existing['id'] : false;
+            }
+            return $existing['id'];
+        } else {
+            // Insert new record
+            $result = $this->wpdb->insert($this->excel_analysis_table, $data);
+            return $result !== false ? $this->wpdb->insert_id : false;
+        }
+    }
+    
+    /**
+     * Helper to determine if new value is better than existing
+     */
+    private function is_better_value($new_value, $existing_value, $field_name) {
+        // For dates, prefer more recent analysis
+        if (in_array($field_name, ['data_evento', 'modified_time'])) {
+            return true; // Always update dates from fresh scan
+        }
+        
+        // For numeric fields, prefer non-zero values
+        if (in_array($field_name, ['importo', 'acconto', 'saldo', 'numero_invitati'])) {
+            return $new_value > 0 && $existing_value <= 0;
+        }
+        
+        // For strings, prefer longer non-empty values
+        if (is_string($new_value) && is_string($existing_value)) {
+            return strlen(trim($new_value)) > strlen(trim($existing_value));
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get Excel analysis records with search and pagination
+     */
+    public function get_excel_analysis(array $args = []) {
+        $defaults = [
+            'per_page' => 20,
+            'page' => 1,
+            'search' => '',
+            'orderby' => 'updated_at',
+            'order' => 'DESC'
+        ];
+        
+        $args = array_merge($defaults, $args);
+        
+        $where_conditions = ['1=1'];
+        $where_values = [];
+        
+        // Search functionality
+        if (!empty($args['search'])) {
+            $search_term = '%' . $this->wpdb->esc_like($args['search']) . '%';
+            $where_conditions[] = "(filename LIKE %s OR nome_referente LIKE %s OR cognome_referente LIKE %s OR tipo_evento LIKE %s)";
+            $where_values = array_fill(0, 4, $search_term);
+        }
+        
+        $where_clause = implode(' AND ', $where_conditions);
+        
+        // Count total
+        $count_sql = "SELECT COUNT(*) FROM {$this->excel_analysis_table} WHERE {$where_clause}";
+        if (!empty($where_values)) {
+            $count_sql = $this->wpdb->prepare($count_sql, $where_values);
+        }
+        $total_items = $this->wpdb->get_var($count_sql);
+        
+        // Get records
+        $offset = ($args['page'] - 1) * $args['per_page'];
+        $orderby = sanitize_sql_orderby($args['orderby'] . ' ' . $args['order']);
+        
+        $sql = "SELECT * FROM {$this->excel_analysis_table} WHERE {$where_clause} ORDER BY {$orderby} LIMIT %d OFFSET %d";
+        $query_values = array_merge($where_values, [$args['per_page'], $offset]);
+        
+        $results = $this->wpdb->get_results($this->wpdb->prepare($sql, $query_values), ARRAY_A);
+        
+        return [
+            'items' => $results ?: [],
+            'total' => intval($total_items),
+            'per_page' => $args['per_page'],
+            'current_page' => $args['page'],
+            'total_pages' => ceil($total_items / $args['per_page'])
+        ];
+    }
+    
+    /**
+     * Get single Excel analysis record by ID
+     */
+    public function get_excel_analysis_by_id($id) {
+        return $this->wpdb->get_row($this->wpdb->prepare(
+            "SELECT * FROM {$this->excel_analysis_table} WHERE id = %d",
+            $id
+        ), ARRAY_A);
+    }
+    
+    /**
+     * Save preventivo (existing functionality)
+     */
+    public function save_preventivo($data) {
+        // Existing preventivo save logic
+        $result = $this->wpdb->insert($this->table_name, $data);
+        return $result !== false ? $this->wpdb->insert_id : false;
+    }
+    
+    /**
+     * Get preventivo by ID
+     */
+    public function get_preventivo($id) {
+        return $this->wpdb->get_row($this->wpdb->prepare(
+            "SELECT * FROM {$this->table_name} WHERE id = %d",
+            $id
+        ), ARRAY_A);
+    }
+    
+    /**
+     * Get all preventivi with pagination
+     */
+    public function get_preventivi($args = []) {
+        $defaults = [
+            'per_page' => 20,
+            'page' => 1,
+            'status' => '',
+            'search' => ''
+        ];
+        
+        $args = array_merge($defaults, $args);
+        
+        $where_conditions = ['1=1'];
+        $where_values = [];
+        
+        if (!empty($args['status'])) {
+            $where_conditions[] = "status = %s";
+            $where_values[] = $args['status'];
+        }
+        
+        if (!empty($args['search'])) {
+            $search_term = '%' . $this->wpdb->esc_like($args['search']) . '%';
+            $where_conditions[] = "(nome_referente LIKE %s OR cognome_referente LIKE %s OR tipo_evento LIKE %s)";
+            $where_values = array_merge($where_values, [$search_term, $search_term, $search_term]);
+        }
+        
+        $where_clause = implode(' AND ', $where_conditions);
+        
+        $count_sql = "SELECT COUNT(*) FROM {$this->table_name} WHERE {$where_clause}";
+        if (!empty($where_values)) {
+            $count_sql = $this->wpdb->prepare($count_sql, $where_values);
+        }
+        $total_items = $this->wpdb->get_var($count_sql);
+        
+        $offset = ($args['page'] - 1) * $args['per_page'];
+        $sql = "SELECT * FROM {$this->table_name} WHERE {$where_clause} ORDER BY created_at DESC LIMIT %d OFFSET %d";
+        $query_values = array_merge($where_values, [$args['per_page'], $offset]);
+        
+        $results = $this->wpdb->get_results($this->wpdb->prepare($sql, $query_values), ARRAY_A);
+        
+        return [
+            'items' => $results ?: [],
+            'total' => intval($total_items),
+            'per_page' => $args['per_page'],
+            'current_page' => $args['page'],
+            'total_pages' => ceil($total_items / $args['per_page'])
+        ];
+    }
+    
+    /**
+     * Update preventivo status
+     */
+    public function update_preventivo_status($id, $status) {
+        return $this->wpdb->update(
+            $this->table_name,
+            ['status' => $status, 'updated_at' => current_time('mysql')],
+            ['id' => $id]
+        );
+    }
+    
+    /**
+     * Delete preventivo
+     */
+    public function delete_preventivo($id) {
+        return $this->wpdb->delete($this->table_name, ['id' => $id]);
+    }
+    
+    /**
+     * Count preventivi with optional filters (for dashboard statistics)
+     */
+    public function count_preventivi($filters = array()) {
+        $where_conditions = ['1=1'];
+        $where_values = [];
+        
+        if (isset($filters['stato'])) {
+            $where_conditions[] = "stato = %s";
+            $where_values[] = $filters['stato'];
+        }
+        
+        if (isset($filters['confermato'])) {
+            $where_conditions[] = "confermato = %d";
+            $where_values[] = intval($filters['confermato']);
+        }
+        
+        if (isset($filters['data_from'])) {
+            $where_conditions[] = "data_evento >= %s";
+            $where_values[] = $filters['data_from'];
+        }
+        
+        if (isset($filters['data_to'])) {
+            $where_conditions[] = "data_evento <= %s";
+            $where_values[] = $filters['data_to'];
+        }
+        
+        $where_clause = implode(' AND ', $where_conditions);
+        
+        $sql = "SELECT COUNT(*) FROM {$this->table_name} WHERE {$where_clause}";
+        if (!empty($where_values)) {
+            $sql = $this->wpdb->prepare($sql, $where_values);
+        }
+        
+        return intval($this->wpdb->get_var($sql));
+    }
+    
+    /**
+     * Sum preventivi value (for dashboard statistics)
+     */
+    public function sum_preventivi_value($filters = array()) {
+        $where_conditions = ['1=1'];
+        $where_values = [];
+        
+        if (isset($filters['stato'])) {
+            $where_conditions[] = "stato = %s";
+            $where_values[] = $filters['stato'];
+        }
+        
+        if (isset($filters['confermato'])) {
+            $where_conditions[] = "confermato = %d";
+            $where_values[] = intval($filters['confermato']);
+        }
+        
+        if (isset($filters['data_from'])) {
+            $where_conditions[] = "data_evento >= %s";
+            $where_values[] = $filters['data_from'];
+        }
+        
+        if (isset($filters['data_to'])) {
+            $where_conditions[] = "data_evento <= %s";
+            $where_values[] = $filters['data_to'];
+        }
+        
+        $where_clause = implode(' AND ', $where_conditions);
+        
+        $sql = "SELECT SUM(importo) FROM {$this->table_name} WHERE {$where_clause}";
+        if (!empty($where_values)) {
+            $sql = $this->wpdb->prepare($sql, $where_values);
+        }
+        
+        return floatval($this->wpdb->get_var($sql)) ?: 0;
+    }
+    
+    /**
+     * Insert new preventivo (alias for save_preventivo for compatibility)
      */
     public function insert_preventivo($data) {
-        global $wpdb;
-        
-        $insert_data = array(
-            'data_evento' => $data['data_evento'],
-            'tipo_evento' => $data['tipo_evento'],
-            'tipo_menu' => $data['tipo_menu'],
-            'numero_invitati' => $data['numero_invitati'],
-            'orario_evento' => $data['orario_evento'] ?? '',
-            'nome_cliente' => $data['nome_cliente'],
-            'telefono' => $data['telefono'] ?? '',
-            'email' => $data['email'] ?? '',
-            'importo_totale' => $data['importo_totale'],
-            'acconto' => $data['acconto'] ?? 0,
-            'omaggio1' => $data['omaggio1'] ?? '',
-            'omaggio2' => $data['omaggio2'] ?? '',
-            'omaggio3' => $data['omaggio3'] ?? '',
-            'extra1' => $data['extra1'] ?? '',
-            'extra2' => $data['extra2'] ?? '',
-            'extra3' => $data['extra3'] ?? '',
-            'stato' => $data['stato'] ?? 'attivo',
-            'excel_url' => $data['excel_url'] ?? '',
-            'pdf_url' => $data['pdf_url'] ?? '',
-            'googledrive_url' => $data['googledrive_url'] ?? '',
-            'created_at' => $data['created_at'] ?? current_time('mysql'),
-            'created_by' => $data['created_by'] ?? get_current_user_id(),
-            'updated_at' => current_time('mysql')
-        );
-        
-        $result = $wpdb->insert($this->table_name, $insert_data);
-        
-        if ($result === false) {
-            error_log('[747Disco-DB] Errore insert: ' . $wpdb->last_error);
-            return false;
-        }
-        
-        $insert_id = $wpdb->insert_id;
-        error_log('[747Disco-DB] ✅ Preventivo inserito con ID: ' . $insert_id);
-        
-        return $insert_id;
+        $result = $this->wpdb->insert($this->table_name, $data);
+        return $result !== false ? $this->wpdb->insert_id : false;
     }
     
     /**
-     * Aggiorna preventivo esistente
+     * Update existing preventivo
      */
-    public function update_preventivo($preventivo_id, $data) {
-        global $wpdb;
-        
+    public function update_preventivo($id, $data) {
         $data['updated_at'] = current_time('mysql');
-        
-        $result = $wpdb->update(
-            $this->table_name, 
-            $data, 
-            array('id' => $preventivo_id)
-        );
-        
-        if ($result === false) {
-            error_log('[747Disco-DB] Errore update: ' . $wpdb->last_error);
-            return false;
-        }
-        
-        error_log('[747Disco-DB] ✅ Preventivo aggiornato: ID ' . $preventivo_id);
-        return true;
-    }
-    
-    /**
-     * Upsert preventivo (insert o update)
-     */
-    public function upsert_preventivo($data) {
-        if (isset($data['id']) && $data['id'] > 0) {
-            $id = $data['id'];
-            unset($data['id']);
-            return $this->update_preventivo($id, $data);
-        } else {
-            return $this->insert_preventivo($data);
-        }
-    }
-    
-    /**
-     * Ottieni preventivo per ID
-     */
-    public function get_preventivo($preventivo_id) {
-        global $wpdb;
-        
-        return $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$this->table_name} WHERE id = %d",
-            $preventivo_id
-        ));
-    }
-    
-    /**
-     * Ottieni tutti i preventivi
-     */
-    public function get_preventivi($args = array()) {
-        global $wpdb;
-        
-        $defaults = array(
-            'orderby' => 'id',
-            'order' => 'DESC',
-            'limit' => 100,
-            'offset' => 0
-        );
-        
-        $args = wp_parse_args($args, $defaults);
-        
-        $where = "1=1";
-        
-        if (isset($args['stato'])) {
-            $where .= $wpdb->prepare(" AND stato = %s", $args['stato']);
-        }
-        
-        if (isset($args['confermato']) && $args['confermato']) {
-            $where .= " AND acconto > 0";
-        }
-        
-        $query = "SELECT * FROM {$this->table_name} 
-                  WHERE {$where} 
-                  ORDER BY {$args['orderby']} {$args['order']} 
-                  LIMIT {$args['limit']} OFFSET {$args['offset']}";
-        
-        return $wpdb->get_results($query);
-    }
-    
-    /**
-     * Conta preventivi
-     */
-    public function count_preventivi($args = array()) {
-        global $wpdb;
-        
-        $where = "1=1";
-        
-        if (isset($args['stato'])) {
-            $where .= $wpdb->prepare(" AND stato = %s", $args['stato']);
-        }
-        
-        if (isset($args['confermato']) && $args['confermato']) {
-            $where .= " AND acconto > 0";
-        }
-        
-        return $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE {$where}");
-    }
-    
-    /**
-     * Somma valore preventivi
-     */
-    public function sum_preventivi_value($args = array()) {
-        global $wpdb;
-        
-        $where = "1=1";
-        
-        if (isset($args['stato'])) {
-            $where .= $wpdb->prepare(" AND stato = %s", $args['stato']);
-        }
-        
-        return floatval($wpdb->get_var(
-            "SELECT SUM(importo_totale) FROM {$this->table_name} WHERE {$where}"
-        ));
-    }
-    
-    /**
-     * Ottieni preventivi recenti
-     */
-    public function get_recent_preventivi($limit = 5) {
-        return $this->get_preventivi(array(
-            'orderby' => 'created_at',
-            'order' => 'DESC',
-            'limit' => $limit
-        ));
-    }
-    
-    /**
-     * Ottieni preventivi filtrati (per dashboard)
-     */
-    public function get_filtered_preventivi($filters) {
-        global $wpdb;
-        
-        $where_clauses = array("1=1");
-        
-        // Ricerca
-        if (!empty($filters['search'])) {
-            $search = '%' . $wpdb->esc_like($filters['search']) . '%';
-            $where_clauses[] = $wpdb->prepare(
-                "(nome_cliente LIKE %s OR tipo_evento LIKE %s OR email LIKE %s)",
-                $search, $search, $search
-            );
-        }
-        
-        // Stato
-        if (!empty($filters['stato'])) {
-            $where_clauses[] = $wpdb->prepare("stato = %s", $filters['stato']);
-        }
-        
-        // Anno
-        if (!empty($filters['anno'])) {
-            $where_clauses[] = $wpdb->prepare("YEAR(data_evento) = %d", $filters['anno']);
-        }
-        
-        // Mese
-        if (!empty($filters['mese'])) {
-            $where_clauses[] = $wpdb->prepare("MONTH(data_evento) = %d", $filters['mese']);
-        }
-        
-        // Menu
-        if (!empty($filters['menu'])) {
-            $where_clauses[] = $wpdb->prepare("tipo_menu = %s", $filters['menu']);
-        }
-        
-        $where = implode(' AND ', $where_clauses);
-        
-        // Paginazione
-        $per_page = $filters['per_page'] ?? 20;
-        $paged = $filters['paged'] ?? 1;
-        $offset = ($paged - 1) * $per_page;
-        
-        $query = "SELECT * FROM {$this->table_name} 
-                  WHERE {$where} 
-                  ORDER BY data_evento DESC 
-                  LIMIT {$per_page} OFFSET {$offset}";
-        
-        $results = $wpdb->get_results($query);
-        
-        // Conta totale
-        $total = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE {$where}");
-        
-        return array(
-            'preventivi' => $results,
-            'total' => $total,
-            'per_page' => $per_page,
-            'current_page' => $paged,
-            'total_pages' => ceil($total / $per_page)
-        );
-    }
-    
-    /**
-     * Ottieni nome tabella
-     */
-    public function get_table_name() {
-        return $this->table_name;
-    }
-    
-    /**
-     * Log helper
-     */
-    private function log($message, $level = 'INFO') {
-        if ($this->debug_mode) {
-            error_log('[747Disco-DB] ' . $message);
-        }
+        return $this->wpdb->update($this->table_name, $data, ['id' => $id]);
     }
 }
