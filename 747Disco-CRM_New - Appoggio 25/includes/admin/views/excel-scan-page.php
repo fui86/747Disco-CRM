@@ -1,1477 +1,520 @@
 <?php
 /**
- * Template per la pagina Scansione Excel Auto - 747 Disco CRM
- * FIXATO: JavaScript batch analysis + accesso dati database corretto
+ * Template per pagina Scansione Excel Auto
  * 
  * @package    Disco747_CRM
  * @subpackage Admin/Views
- * @since      11.7.0-EXCEL-SCAN-DEDICATED
- * @version    11.7.5-COMPLETE-FIXED
+ * @version    11.5.9-EXCEL-SCAN
  */
 
-// Sicurezza: impedisce l'accesso diretto al file
 if (!defined('ABSPATH')) {
     exit('Accesso diretto non consentito');
 }
 
-// Dati necessari dovrebbero essere già stati preparati dal controller
-$excel_files_list = $excel_files_list ?? array();
-$scan_result = $scan_result ?? null;
-$show_results = $show_results ?? false;
-$is_googledrive_configured = $is_googledrive_configured ?? false;
-$analysis_results = $analysis_results ?? array();
-$last_analysis_date = $last_analysis_date ?? 'Mai';
-$total_analysis = $total_analysis ?? 0;
-
-// Funzioni helper per formattazione dati - ACCESSO DIRETTO AI CAMPI DATABASE
-if (!function_exists('format_currency_excel')) {
-    function format_currency_excel($amount) {
-        return '€ ' . number_format(floatval($amount), 2, ',', '.');
-    }
-}
-
-if (!function_exists('format_date_excel')) {
-    function format_date_excel($date) {
-        if (empty($date)) return 'N/A';
-        
-        // Se è già in formato Y-m-d, convertilo a d/m/Y
-        if (preg_match('/^\d{4}-\d{2}-\d{2}/', $date)) {
-            return date('d/m/Y', strtotime($date));
-        }
-        
-        // Se è un serial Excel, convertilo
-        if (is_numeric($date)) {
-            $unix_date = ($date - 25569) * 86400;
-            return date('d/m/Y', $unix_date);
-        }
-        
-        return $date;
-    }
-}
-
-if (!function_exists('format_time_excel')) {
-    function format_time_excel($time) {
-        if (empty($time)) return '';
-        
-        // Se è già in formato H:i
-        if (preg_match('/^\d{1,2}:\d{2}$/', $time)) {
-            return $time;
-        }
-        
-        // Se è un numero Excel (frazione di giorno)
-        if (is_numeric($time) && $time > 0) {
-            $hours = floor($time * 24);
-            $minutes = floor(($time * 24 - $hours) * 60);
-            return sprintf('%d:%02d', $hours, $minutes);
-        }
-        
-        return $time;
-    }
-}
-
-if (!function_exists('parse_orari_excel')) {
-    function parse_orari_excel($orari_raw) {
-        if (empty($orari_raw)) {
-            return ['inizio' => '', 'fine' => ''];
-        }
-        
-        // Se è stringa formato "HH:MM - HH:MM"
-        if (is_string($orari_raw) && strpos($orari_raw, '-') !== false) {
-            $parts = explode('-', $orari_raw);
-            return [
-                'inizio' => trim($parts[0] ?? ''),
-                'fine' => trim($parts[1] ?? '')
-            ];
-        }
-        
-        return ['inizio' => $orari_raw, 'fine' => ''];
-    }
-}
-
-if (!function_exists('determine_stato_excel')) {
-    function determine_stato_excel($result, $filename = '') {
-        $acconto = floatval($result->acconto ?? 0);
-        $filename_lower = strtolower($filename);
-        
-        // Confermato se filename inizia con "CONF" oppure acconto > 0
-        if (strpos($filename_lower, 'conf ') === 0 || $acconto > 0) {
-            return [
-                'text' => 'Confermato',
-                'class' => 'stato-confermato',
-                'color' => '#28a745'
-            ];
-        }
-        
-        // Annullato se filename inizia con "No", "NO", "Annullato"
-        if (strpos($filename_lower, 'no ') === 0 || 
-            strpos($filename_lower, 'annullato') === 0) {
-            return [
-                'text' => 'Annullato', 
-                'class' => 'stato-annullato',
-                'color' => '#dc3545'
-            ];
-        }
-        
-        // Altrimenti in definizione
-        return [
-            'text' => 'In definizione',
-            'class' => 'stato-in-definizione', 
-            'color' => '#ffc107'
-        ];
-    }
-}
-
-if (!function_exists('format_omaggi_excel')) {
-    function format_omaggi_excel($omaggi_list) {
-        if (empty($omaggi_list)) return '';
-        
-        if (is_string($omaggi_list)) {
-            $omaggi_list = json_decode($omaggi_list, true);
-        }
-        
-        if (!is_array($omaggi_list)) return '';
-        
-        $omaggi_non_vuoti = array_filter($omaggi_list, function($item) {
-            return !empty(trim($item));
-        });
-        
-        return implode(', ', $omaggi_non_vuoti);
-    }
-}
-
-if (!function_exists('format_extra_excel')) {
-    function format_extra_excel($extra_list) {
-        if (empty($extra_list)) return '';
-        
-        if (is_string($extra_list)) {
-            $extra_list = json_decode($extra_list, true);
-        }
-        
-        if (!is_array($extra_list)) return '';
-        
-        $extra_formatted = [];
-        foreach ($extra_list as $extra) {
-            if (!empty($extra['descrizione']) && !empty($extra['prezzo'])) {
-                $extra_formatted[] = $extra['descrizione'] . ' ' . format_currency_excel($extra['prezzo']);
-            }
-        }
-        
-        return implode(', ', $extra_formatted);
-    }
-}
-
-if (!function_exists('format_whatsapp_link')) {
-    function format_whatsapp_link($telefono) {
-        if (empty($telefono)) return '';
-        
-        // Pulisci il numero di telefono
-        $clean_phone = preg_replace('/[^0-9]/', '', $telefono);
-        
-        // Se inizia con 39, usa così com'è, altrimenti aggiungi 39
-        if (!preg_match('/^39/', $clean_phone)) {
-            $clean_phone = '39' . $clean_phone;
-        }
-        
-        return 'https://wa.me/' . $clean_phone;
-    }
-}
-
-// Funzione helper per determinare stato preventivo (legacy)
-function determina_stato_preventivo($result) {
-    $acconto = floatval($result->acconto ?? 0);
-    $importo = floatval($result->importo_totale ?? 0);
-    
-    if ($acconto > 0 && $importo > 0) {
-        return [
-            'class' => 'stato-confermato',
-            'text' => 'Confermato',
-            'icon' => '✅',
-            'color' => '#28a745'
-        ];
-    } elseif ($importo > 0) {
-        return [
-            'class' => 'stato-in-corso', 
-            'text' => 'In corso',
-            'icon' => '⏳',
-            'color' => '#ffc107'
-        ];
-    } else {
-        return [
-            'class' => 'stato-non-confermato',
-            'text' => 'Non Confermato', 
-            'icon' => '❌',
-            'color' => '#dc3545'
-        ];
-    }
-}
-
-// Debug iniziale template
-error_log("TEMPLATE DEBUG: excel-scan-page.php caricato");
-error_log("TEMPLATE DEBUG: excel_files_list count = " . count($excel_files_list));
-error_log("TEMPLATE DEBUG: analysis_results count = " . count($analysis_results));
-error_log("TEMPLATE DEBUG: is_googledrive_configured = " . ($is_googledrive_configured ? 'true' : 'false'));
+// Variabili disponibili dal controller
+$is_googledrive_configured = isset($is_googledrive_configured) ? $is_googledrive_configured : false;
+$excel_files_list = isset($excel_files_list) ? $excel_files_list : array();
+$analysis_results = isset($analysis_results) ? $analysis_results : array();
+$total_analysis = isset($total_analysis) ? $total_analysis : 0;
+$last_analysis_date = isset($last_analysis_date) ? $last_analysis_date : 'Mai';
 ?>
 
-<div class="disco747-excel-scan-wrapper" style="max-width: 1400px; margin: 0 auto; padding: 20px;">
+<div class="disco747-excel-scan-wrapper" style="max-width: 1600px; margin: 0 auto; padding: 20px;">
 
-    <!-- Header Pagina -->
-    <div style="background: linear-gradient(135deg, #d4af37, #f4e797); padding: 30px; border-radius: 15px; box-shadow: 0 8px 25px rgba(0,0,0,0.1); margin-bottom: 30px; position: relative; overflow: hidden;">
-        
-        <!-- Decorazione -->
-        <div style="position: absolute; top: -50px; right: -50px; width: 150px; height: 150px; background: rgba(255,255,255,0.1); border-radius: 50%; opacity: 0.3;"></div>
-        <div style="position: absolute; bottom: -30px; left: -30px; width: 100px; height: 100px; background: rgba(255,255,255,0.1); border-radius: 50%; opacity: 0.2;"></div>
-        
-        <div style="position: relative;">
-            <h1 style="margin: 0 0 10px 0; color: #2b1e1a; font-size: 2.2rem; font-weight: 700;">
-                📊 Scansione Excel Automatica
-            </h1>
-            <p style="margin: 0; color: #856404; font-size: 1.1rem; font-weight: 500;">
-                Analizza automaticamente i file Excel dalla cartella Google Drive /747-Preventivi/
-            </p>
-            
-            <!-- Breadcrumb aggiornato -->
-            <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.3);">
-                <a href="<?php echo admin_url('admin.php?page=disco747-crm'); ?>" style="color: #856404; text-decoration: none; font-weight: 600;">
-                    🏠 Dashboard
-                </a>
-                <span style="color: #856404; margin: 0 10px;">→</span>
-                <a href="<?php echo admin_url('admin.php?page=disco747-scan-excel'); ?>" style="color: #2b1e1a; text-decoration: none; font-weight: 600;">
-                    📊 Excel Scan
-                </a>
-                <span style="color: #856404; margin: 0 10px;">→</span>
-                <a href="<?php echo admin_url('admin.php?page=disco747-crm&action=dashboard_preventivi'); ?>" class="disco747-button disco747-button-secondary" style="font-size: 12px; padding: 8px 12px;">
-                    📋 Dashboard
-                </a>
-            </div>
+    <!-- Header -->
+    <div style="background: linear-gradient(135deg, #d4af37, #f4e797); padding: 30px; border-radius: 15px; box-shadow: 0 8px 25px rgba(0,0,0,0.1); margin-bottom: 30px;">
+        <h1 style="margin: 0 0 10px 0; color: #2b1e1a; font-size: 2.2rem; font-weight: 700;">
+            📊 Scansione Excel Automatica
+        </h1>
+        <p style="margin: 0; color: #856404; font-size: 1.1rem;">
+            Analizza automaticamente i file Excel dalla cartella Google Drive /747-Preventivi/
+        </p>
+        <div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.3);">
+            <a href="<?php echo admin_url('admin.php?page=disco747-crm'); ?>" style="color: #856404; text-decoration: none;">
+                🏠 Dashboard
+            </a>
+            <span style="color: #856404; margin: 0 10px;">→</span>
+            <span style="color: #2b1e1a; font-weight: 600;">📊 Excel Scan</span>
         </div>
     </div>
 
-    <!-- Stato Google Drive -->
-    <div class="disco747-card" style="margin-bottom: 30px;">
-        <div class="disco747-card-header">
-            ☁️ Stato Google Drive
+    <!-- Stato Sistema -->
+    <div class="disco747-card" style="margin-bottom: 30px; background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <div class="disco747-card-header" style="background: linear-gradient(135deg, #2b1e1a, #3d2f2a); color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+            ⚙️ Stato Sistema
         </div>
-        <div class="disco747-card-content">
+        <div class="disco747-card-content" style="padding: 25px;">
             <?php if ($is_googledrive_configured): ?>
-                <div class="disco747-notice success">
-                    <p><strong>✅ Google Drive configurato correttamente!</strong></p>
-                    <p>La scansione automatica dei file Excel è attiva. I file vengono cercati nella cartella <code>/747-Preventivi/</code>.</p>
+                <div style="background: #d4edda; border-left: 5px solid #28a745; padding: 15px; margin-bottom: 20px;">
+                    <strong>✅ Google Drive configurato correttamente!</strong><br>
+                    La scansione automatica dei file Excel è attiva.
                 </div>
             <?php else: ?>
-                <div class="disco747-notice error">
-                    <p><strong>❌ Google Drive non configurato</strong></p>
-                    <p>Per utilizzare questa funzione, configura prima Google Drive nelle <a href="<?php echo admin_url('admin.php?page=disco747-settings'); ?>">Impostazioni</a>.</p>
+                <div style="background: #f8d7da; border-left: 5px solid #dc3545; padding: 15px; margin-bottom: 20px;">
+                    <strong>❌ Google Drive non configurato</strong><br>
+                    <a href="<?php echo admin_url('admin.php?page=disco747-settings'); ?>">Configura le credenziali OAuth</a> per attivare la scansione.
                 </div>
             <?php endif; ?>
-        </div>
-    </div>
-
-    <!-- Lista Files Excel -->
-    <div class="disco747-card" style="margin-bottom: 30px;">
-        <div class="disco747-card-header">
-            📁 File Excel Disponibili
-            <div id="files-count" style="float: right; font-size: 14px; font-weight: normal;">
-                <?php echo count($excel_files_list); ?> file trovati
-            </div>
-        </div>
-        <div class="disco747-card-content">
             
-            <!-- Controlli ricerca e refresh -->
-            <div style="display: flex; gap: 15px; margin-bottom: 20px; align-items: center; flex-wrap: wrap;">
-                <div style="flex: 1; min-width: 250px;">
-                    <input type="text" id="excel-search" 
-                           placeholder="🔍 Cerca file Excel per nome..." 
-                           style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-size: 14px;"
-                           <?php echo !$is_googledrive_configured ? 'disabled' : ''; ?>>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px;">
+                <div style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                    <div style="font-size: 2rem; font-weight: bold; color: #d4af37;"><?php echo count($excel_files_list); ?></div>
+                    <div style="color: #666;">File Excel Disponibili</div>
                 </div>
-                <div style="display: flex; gap: 10px;">
-                    <button type="button" id="search-files-btn" class="disco747-button disco747-button-primary">
-                        🔍 Cerca
-                    </button>
-                    <button type="button" id="refresh-files-btn" class="disco747-button disco747-button-secondary">
-                        🔄 Refresh
-                    </button>
-                    <button type="button" id="refresh-all-btn" class="disco747-button disco747-button-secondary">
-                        🔄 Reset Tutto
-                    </button>
+                <div style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                    <div style="font-size: 2rem; font-weight: bold; color: #28a745;"><?php echo $total_analysis; ?></div>
+                    <div style="color: #666;">Analisi Completate</div>
                 </div>
-            </div>
-            
-            <!-- Tabella files -->
-            <div id="files-table-container">
-                <?php if ($is_googledrive_configured): ?>
-                    <div style="text-align: center; padding: 40px; color: #666;">
-                        <div style="font-size: 48px; margin-bottom: 15px;">⏳</div>
-                        <h3 style="margin: 0 0 10px 0;">Caricamento file...</h3>
-                        <p style="margin: 0;">Connessione a Google Drive in corso</p>
-                    </div>
-                <?php else: ?>
-                    <div style="text-align: center; padding: 40px; color: #666;">
-                        <div style="font-size: 48px; margin-bottom: 15px;">☁️</div>
-                        <h3 style="margin: 0 0 10px 0;">Google Drive non configurato</h3>
-                        <p style="margin: 0;">Configura Google Drive per vedere i file disponibili</p>
-                    </div>
-                <?php endif; ?>
-            </div>
-            
-            <!-- Paginazione -->
-            <div id="files-pagination" style="margin-top: 20px; text-align: center; display: none;">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <button type="button" id="prev-page-btn" class="disco747-button disco747-button-secondary" disabled>
-                        ← Precedente
-                    </button>
-                    <div id="page-info" style="color: #666;">
-                        Pagina 1 di 1
-                    </div>
-                    <button type="button" id="next-page-btn" class="disco747-button disco747-button-secondary" disabled>
-                        Successiva →
-                    </button>
+                <div style="text-align: center; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                    <div style="font-size: 1rem; color: #666;">Ultima Analisi</div>
+                    <div style="font-weight: bold;"><?php echo esc_html($last_analysis_date); ?></div>
                 </div>
-            </div>
-            
-        </div>
-    </div>
-
-    <!-- Analisi Manuale per File ID -->
-    <div class="disco747-card" style="margin-bottom: 30px;">
-        <div class="disco747-card-header">
-            🔍 Analisi Manuale File
-        </div>
-        <div class="disco747-card-content">
-            <div class="disco747-notice info">
-                <p><strong>💡 Modalità Manuale</strong> - Inserisci l'ID di un file Excel specifico per analizzarlo direttamente.</p>
-            </div>
-            
-            <div style="display: flex; gap: 15px; margin-top: 20px; align-items: end; flex-wrap: wrap;">
-                <div style="flex: 1; min-width: 300px;">
-                    <label style="display: block; margin-bottom: 5px; font-weight: 600; color: #2b1e1a;">
-                        ID File Google Drive:
-                    </label>
-                    <input type="text" id="manual-file-id" 
-                           placeholder="Es: 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms" 
-                           style="width: 100%; padding: 12px; border: 2px solid #e9ecef; border-radius: 8px; font-family: monospace; font-size: 13px;"
-                           <?php echo !$is_googledrive_configured ? 'disabled' : ''; ?>>
-                    <div style="font-size: 12px; color: #666; margin-top: 5px;">
-                        L'ID del file si trova nell'URL di Google Drive dopo /d/ e prima di /view
-                    </div>
-                </div>
-                <div>
-                    <button type="button" id="analyze-manual-btn" class="disco747-button disco747-button-primary">
-                        🔬 Analizza File ID
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Risultati Analisi -->
-    <div id="analysis-results" style="display: none; margin-bottom: 30px;">
-        <div class="disco747-card">
-            <div class="disco747-card-header">
-                📊 Risultati Analisi File
-                <div style="float: right;">
-                    <button type="button" id="export-results-btn" class="disco747-button disco747-button-secondary" style="margin-right: 10px;">
-                        📤 Esporta JSON
-                    </button>
-                    <button type="button" id="clear-results-btn" class="disco747-button disco747-button-secondary">
-                        🧹 Pulisci
-                    </button>
-                </div>
-            </div>
-            <div class="disco747-card-content">
-                
-                <!-- Summary analisi -->
-                <div id="analysis-summary" style="display: none;">
-                    <!-- Popolato dinamicamente da JavaScript -->
-                </div>
-                
-                <!-- Dashboard dati estratti -->
-                <div id="extracted-data-dashboard">
-                    <!-- Popolato dinamicamente da JavaScript -->
-                </div>
-                
             </div>
         </div>
     </div>
 
     <!-- Debug Log -->
-    <div id="debug-log-section" style="display: none; margin-bottom: 30px;">
-        <div class="disco747-card">
-            <div class="disco747-card-header">
-                🐛 Log Debug Analisi
-                <div style="float: right;">
-                    <button type="button" id="toggle-log-btn" class="disco747-button disco747-button-secondary" style="margin-right: 10px;">
-                        👁️ Mostra
-                    </button>
-                    <button type="button" id="copy-log-btn" class="disco747-button disco747-button-secondary" style="margin-right: 10px;">
-                        📋 Copia
-                    </button>
-                    <button type="button" id="download-log-btn" class="disco747-button disco747-button-secondary">
-                        💾 Scarica
-                    </button>
-                </div>
+    <div class="disco747-card" style="margin-bottom: 30px; background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <div class="disco747-card-header" style="background: linear-gradient(135deg, #2b1e1a, #3d2f2a); color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+            🐛 Debug e Log
+            <div style="float: right;">
+                <button type="button" id="toggle-debug" class="button button-secondary" style="margin-right: 10px;">
+                    Mostra/Nascondi
+                </button>
+                <button type="button" id="clear-debug" class="button button-secondary">
+                    Pulisci Log
+                </button>
             </div>
-            <div class="disco747-card-content">
-                
-                <!-- Statistiche log -->
-                <div class="log-stats" style="display: none; margin-bottom: 20px;">
-                    <!-- Popolato dinamicamente -->
+        </div>
+        <div class="disco747-card-content" id="debug-content" style="padding: 25px; display: none;">
+            <div id="debug-log" style="background: #f8f9fa; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 12px; max-height: 400px; overflow-y: auto;">
+                <div class="log-entry" data-timestamp="<?php echo current_time('Y-m-d H:i:s'); ?>">
+                    [<?php echo current_time('H:i:s'); ?>] Sistema inizializzato
                 </div>
-                
-                <!-- Contenuto log -->
-                <div id="debug-log-content" style="display: none; max-height: 400px; overflow-y: auto; background: #f8f9fa; padding: 15px; border-radius: 8px; font-family: 'Courier New', monospace; font-size: 12px; line-height: 1.4; border: 1px solid #e9ecef;">
-                    <!-- Popolato dinamicamente -->
-                </div>
-                
             </div>
         </div>
     </div>
 
-    <!-- ANALISI BATCH - SEMPRE VISIBILE SE CI SONO FILE -->
-    <?php if (!empty($excel_files_list)): ?>
-        <div class="disco747-card" style="margin-bottom: 30px;">
-            <div class="disco747-card-header">
-                🚀 Analisi Batch - Tutti i File Excel
-                <div style="font-size: 0.9em; font-weight: normal;">
-                    <?php echo count($excel_files_list); ?> file da analizzare
+    <?php if (!empty($excel_files_list) && $is_googledrive_configured): ?>
+    <!-- Scansione Batch -->
+    <div class="disco747-card" style="margin-bottom: 30px; background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <div class="disco747-card-header" style="background: linear-gradient(135deg, #2b1e1a, #3d2f2a); color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+            🚀 Scansione Batch
+            <span style="font-size: 0.9em; font-weight: normal; margin-left: 10px;">
+                (<?php echo count($excel_files_list); ?> file pronti)
+            </span>
+        </div>
+        <div class="disco747-card-content" style="padding: 25px;">
+            <div style="background: #fff3cd; border-left: 5px solid #ffc107; padding: 15px; margin-bottom: 20px;">
+                <strong>⚠️ Attenzione:</strong> La scansione batch analizzerà tutti i file Excel trovati. 
+                Il processo può richiedere diversi minuti.
+            </div>
+            
+            <!-- Progress Container -->
+            <div id="batch-progress" style="display: none; margin-bottom: 20px;">
+                <div style="margin-bottom: 10px;">
+                    <span id="batch-status">Preparazione...</span>
+                    <span style="float: right;">
+                        <span id="batch-current">0</span> / <span id="batch-total">0</span> file
+                    </span>
+                </div>
+                <div style="background: #e9ecef; border-radius: 10px; overflow: hidden; height: 30px;">
+                    <div id="batch-progress-bar" style="background: linear-gradient(90deg, #28a745, #20c997); height: 100%; width: 0%; transition: width 0.3s;"></div>
+                </div>
+                <div style="margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; text-align: center;">
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                        ✅ Successi: <span id="batch-success">0</span>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                        ❌ Errori: <span id="batch-errors">0</span>
+                    </div>
+                    <div style="background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                        ⏱️ Tempo: <span id="batch-time">00:00</span>
+                    </div>
                 </div>
             </div>
-            <div class="disco747-card-content">
-                <div class="disco747-notice warning">
-                    <p><strong>⚠️ Attenzione:</strong> Questa funzione analizzerà TUTTI i file Excel trovati nella cartella /747-Preventivi/.</p>
-                    <p>Il processo può richiedere diversi minuti. I risultati verranno salvati automaticamente nel database.</p>
-                </div>
-                
-                <!-- Statistiche Batch -->
-                <div class="batch-stats">
-                    <div class="batch-stat-card">
-                        <div class="batch-stat-number" style="color: #28a745;" id="stat-success">0</div>
-                        <div>Successi</div>
-                    </div>
-                    <div class="batch-stat-card">
-                        <div class="batch-stat-number" style="color: #dc3545;" id="stat-errors">0</div>
-                        <div>Errori</div>
-                    </div>
-                    <div class="batch-stat-card">
-                        <div class="batch-stat-number" style="color: #ffc107;" id="stat-rate">0%</div>
-                        <div>Tasso Successo</div>
-                    </div>
-                    <div class="batch-stat-card">
-                        <div class="batch-stat-number" style="color: #17a2b8;" id="stat-remaining"><?php echo count($excel_files_list); ?></div>
-                        <div>Rimanenti</div>
-                    </div>
-                </div>
-                
-                <!-- Progress Bar e Timer -->
-                <div class="batch-progress-container">
-                    <div class="batch-timer" id="batch-timer">00:00:00</div>
-                    <div class="batch-progress-bar">
-                        <div class="batch-progress-fill" id="batch-progress"></div>
-                    </div>
-                    <div style="text-align: center; color: #666; font-size: 0.9em;">
-                        <span id="progress-text">Pronto per iniziare l'analisi batch</span>
-                    </div>
-                </div>
-                
-                <!-- Controlli Batch -->
-                <div class="batch-controls">
-                    <button type="button" id="start-batch-analysis" class="disco747-button disco747-button-primary">
-                        🚀 Avvia Analisi Batch
-                    </button>
-                    <button type="button" id="stop-batch-analysis" class="disco747-button disco747-button-danger" style="display: none;">
-                        ⏹️ Ferma Analisi
-                    </button>
-                </div>
-                
-                <!-- Tabella Risultati Batch -->
-                <div id="batch-results-container" style="margin-top: 30px; display: none;">
-                    <h4 style="margin-bottom: 15px;">📊 Risultati Analisi Batch in Tempo Reale</h4>
-                    <div style="max-height: 400px; overflow-y: auto; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
-                        <table class="batch-results-table" id="batch-results-table">
-                            <thead>
-                                <tr>
-                                    <th style="width: 60px;">#</th>
-                                    <th style="width: 250px;">📄 Nome File</th>
-                                    <th style="width: 100px;">📅 Data</th>
-                                    <th style="width: 150px;">🎉 Evento</th>
-                                    <th style="width: 80px;">🍽️ Menu</th>
-                                    <th style="width: 80px;">👥 Inv.</th>
-                                    <th style="width: 100px;">💰 Importo</th>
-                                    <th style="width: 100px;">✅ Stato</th>
-                                </tr>
-                            </thead>
-                            <tbody id="batch-results-body">
-                                <!-- Righe popolate dinamicamente -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+            
+            <div style="text-align: center;">
+                <button type="button" id="start-batch" class="button button-primary button-hero">
+                    🚀 Avvia Scansione Batch
+                </button>
+                <button type="button" id="stop-batch" class="button button-secondary button-hero" style="display: none; margin-left: 10px;">
+                    ⏹️ Ferma Scansione
+                </button>
             </div>
         </div>
+    </div>
     <?php endif; ?>
 
-    <!-- Debug e Controlli -->
-    <div class="disco747-card" style="margin-bottom: 30px;">
-        <div class="disco747-card-header">
-            🛠️ Debug e Controlli
-        </div>
-        <div class="disco747-card-content">
-            <div style="display: flex; gap: 15px; margin-bottom: 20px; flex-wrap: wrap;">
-                <button type="button" id="toggle-debug-log" class="disco747-button disco747-button-secondary">
-                    👁️ Mostra/Nascondi Log
+    <!-- Tabella Risultati -->
+    <div class="disco747-card" style="background: white; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+        <div class="disco747-card-header" style="background: linear-gradient(135deg, #2b1e1a, #3d2f2a); color: white; padding: 20px; border-radius: 10px 10px 0 0;">
+            📋 Risultati Analisi Excel (<?php echo $total_analysis; ?> record)
+            <div style="float: right;">
+                <button type="button" id="refresh-table" class="button button-secondary">
+                    🔄 Aggiorna
                 </button>
-                <button type="button" id="clear-debug-log" class="disco747-button disco747-button-secondary">
-                    🧹 Pulisci Log
-                </button>
-                <button type="button" id="download-debug-log" class="disco747-button disco747-button-secondary">
-                    💾 Scarica Log
-                </button>
-                <label style="display: flex; align-items: center; gap: 8px; color: #666;">
-                    <input type="checkbox" id="auto-scroll-log" checked> Auto-scroll log
-                </label>
-            </div>
-            
-            <div id="debug-log-container" style="display: none;">
-                <div id="debug-log"></div>
             </div>
         </div>
-    </div>
-
-    <!-- TABELLA RISULTATI ANALISI EXCEL CON LE 14 COLONNE - ACCESSO DATI CORRETTO -->
-    <div class="disco747-card" style="margin-top: 30px;">
-        <div class="disco747-card-header">
-            📊 Risultati Analisi Excel (<?php echo $total_analysis; ?> analisi trovate)
-            <div style="float: right; font-size: 14px; font-weight: normal;">
-                <span style="color: #fff;">Ultima analisi: <?php echo $last_analysis_date; ?></span>
-            </div>
-        </div>
-        
-        <div class="disco747-card-content">
+        <div class="disco747-card-content" style="padding: 25px;">
             
             <!-- Filtri -->
-            <div class="analysis-filters" style="background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
-                <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
-                    <div>
-                        <input type="text" id="search-analysis" placeholder="Cerca per nome, evento, email..." 
-                               style="padding: 8px 12px; border: 1px solid #ccc; border-radius: 4px; width: 250px;">
-                    </div>
-                    <div>
-                        <select id="filter-menu" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
-                            <option value="">Tutti i Menu</option>
-                            <option value="Menu 7">Menu 7</option>
-                            <option value="Menu 74">Menu 74</option>
-                            <option value="Menu 7-4">Menu 7-4</option>
-                            <option value="Menu 747">Menu 747</option>
-                            <option value="Menu 7-4-7">Menu 7-4-7</option>
-                        </select>
-                    </div>
-                    <div>
-                        <select id="filter-success" style="padding: 8px; border: 1px solid #ccc; border-radius: 4px;">
-                            <option value="">Tutti gli Stati</option>
-                            <option value="1">Solo Successi</option>
-                            <option value="0">Solo Errori</option>
-                        </select>
-                    </div>
-                    <div>
-                        <button type="button" id="apply-filters" style="padding: 8px 16px; background: #d4af37; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
-                            Applica Filtri
-                        </button>
-                        <button type="button" id="reset-filters" style="padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer; margin-left: 10px;">
-                            Reset
-                        </button>
-                    </div>
-                </div>
+            <div style="margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+                <input type="text" id="search-analysis" placeholder="🔍 Cerca..." style="flex: 1; min-width: 200px; padding: 8px;">
+                <select id="filter-menu" style="padding: 8px;">
+                    <option value="">Tutti i Menu</option>
+                    <option value="Menu 7">Menu 7</option>
+                    <option value="Menu 74">Menu 74</option>
+                    <option value="Menu 747">Menu 747</option>
+                </select>
+                <select id="filter-stato" style="padding: 8px;">
+                    <option value="">Tutti gli Stati</option>
+                    <option value="CONF">Confermato</option>
+                    <option value="NO">Annullato</option>
+                    <option value="Neutro">In Attesa</option>
+                </select>
             </div>
-
-            <?php if (empty($analysis_results)): ?>
-                <!-- Messaggio nessun risultato -->
-                <div style="text-align: center; padding: 40px; color: #666;">
-                    <div style="font-size: 48px; margin-bottom: 15px;">📋</div>
-                    <h3 style="margin: 0 0 10px 0;">Nessuna analisi trovata</h3>
-                    <p style="margin: 0;">Utilizza la scansione manuale o batch per analizzare i file Excel.</p>
-                </div>
-            <?php else: ?>
-                
-                <!-- Statistiche rapide -->
-                <div class="analysis-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
-                    <?php
-                    $success_count = 0;
-                    $error_count = 0;
-                    $total_importo = 0;
-                    $total_acconto = 0;
-                    
-                    foreach ($analysis_results as $result) {
-                        if ($result->analysis_success) {
-                            $success_count++;
-                            $total_importo += floatval($result->importo_totale ?? 0);
-                            $total_acconto += floatval($result->acconto ?? 0);
-                        } else {
-                            $error_count++;
-                        }
-                    }
-                    ?>
-                    
-                    <div style="background: #d4edda; padding: 15px; border-radius: 8px; text-align: center;">
-                        <div style="font-size: 20px; font-weight: bold; color: #155724;">✅ <?php echo $success_count; ?></div>
-                        <div style="color: #155724; font-weight: bold;">Analisi Riuscite</div>
-                    </div>
-                    
-                    <div style="background: #f8d7da; padding: 15px; border-radius: 8px; text-align: center;">
-                        <div style="font-size: 20px; font-weight: bold; color: #721c24;">❌ <?php echo $error_count; ?></div>
-                        <div style="color: #721c24; font-weight: bold;">Errori</div>
-                    </div>
-                    
-                    <div style="background: #fff3cd; padding: 15px; border-radius: 8px; text-align: center;">
-                        <div style="font-size: 20px; font-weight: bold; color: #856404;">💰 <?php echo format_currency_excel($total_importo); ?></div>
-                        <div style="color: #856404; font-weight: bold;">Fatturato Totale</div>
-                    </div>
-                    
-                    <div style="background: #d1ecf1; padding: 15px; border-radius: 8px; text-align: center;">
-                        <div style="font-size: 20px; font-weight: bold; color: #0c5460;">💳 <?php echo format_currency_excel($total_acconto); ?></div>
-                        <div style="color: #0c5460; font-weight: bold;">Acconti Totali</div>
-                    </div>
-                </div>
-
-                <!-- NUOVA TABELLA CON 14 COLONNE - ACCESSO DATI CORRETTO DAI CAMPI DATABASE -->
-                <div class="table-responsive" style="overflow-x: auto; margin-top: 20px;">
-                    <table class="analysis-results-table" style="width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                        <thead>
-                            <tr style="background: linear-gradient(135deg, #d4af37, #f4e797); color: #333;">
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">📅 Data evento</th>
-                                <th style="padding: 12px 8px; text-align: left; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 120px;">🎉 Tipo evento</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 120px;">🕐 Orario</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 80px;">👥 Invitati</th>
-                                <th style="padding: 12px 8px; text-align: left; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 150px;">👤 Referente</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 120px;">📱 Telefono</th>
-                                <th style="padding: 12px 8px; text-align: left; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 180px;">📧 Email</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">🍽️ Menu</th>
-                                <th style="padding: 12px 8px; text-align: right; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">💰 Importo totale</th>
-                                <th style="padding: 12px 8px; text-align: right; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">💳 Acconto</th>
-                                <th style="padding: 12px 8px; text-align: right; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">💸 Da saldare</th>
-                                <th style="padding: 12px 8px; text-align: left; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 150px;">🎁 Omaggi</th>
-                                <th style="padding: 12px 8px; text-align: left; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 150px;">➕ Extra</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 120px;">✅ Stato</th>
-                                <th style="padding: 12px 8px; text-align: center; font-weight: bold; border-bottom: 2px solid #c19b26; min-width: 100px;">⚙️ Azioni</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($analysis_results as $index => $result): ?>
-                                <?php 
-                                // ACCESSO DIRETTO AI CAMPI DATABASE - NON PIÙ DA JSON
-                                
-                                // Parse orari (ora da campo diretto)
-                                $orari = parse_orari_excel($result->orario_inizio ?? ''); // o da altro campo orario se esiste
-                                
-                                // Determina stato
-                                $stato = determine_stato_excel($result, $result->filename ?? '');
-                                
-                                // Formatta omaggi e extra (da campi JSON se esistono, altrimenti da campi separati)
-                                $omaggi = format_omaggi_excel($result->omaggi_list ?? '');
-                                $extra = format_extra_excel($result->extra_list ?? '');
-                                ?>
-                                <tr class="table-row analysis-row" style="<?php echo $index % 2 === 0 ? 'background: #f9f9f9;' : 'background: white;'; ?> border-bottom: 1px solid #e9ecef;">
-                                    
-                                    <!-- 1. Data evento (formato dd/mm/YYYY) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: center; font-weight: bold; color: #2b1e1a;">
-                                        <?php echo format_date_excel($result->data_evento ?? ''); ?>
-                                    </td>
-                                    
-                                    <!-- 2. Tipo evento - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; color: #2b1e1a;">
-                                        <?php echo esc_html($result->tipo_evento ?? 'N/A'); ?>
-                                    </td>
-                                    
-                                    <!-- 3. Orario inizio - Orario fine -->
-                                    <td style="padding: 12px 8px; text-align: center; font-size: 0.9em;">
+            
+            <!-- Tabella -->
+            <div style="overflow-x: auto;">
+                <table class="wp-list-table widefat fixed striped" id="analysis-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px;">ID</th>
+                            <th style="width: 100px;">Data Evento</th>
+                            <th>Tipo Evento</th>
+                            <th style="width: 80px;">Menu</th>
+                            <th>Cliente</th>
+                            <th style="width: 80px;">Invitati</th>
+                            <th style="width: 100px;">Importo</th>
+                            <th style="width: 80px;">Stato</th>
+                            <th style="width: 120px;">File</th>
+                            <th style="width: 100px;">Azioni</th>
+                        </tr>
+                    </thead>
+                    <tbody id="analysis-tbody">
+                        <?php if (!empty($analysis_results)): ?>
+                            <?php foreach ($analysis_results as $row): ?>
+                                <tr data-id="<?php echo esc_attr($row['id']); ?>">
+                                    <td><?php echo esc_html($row['id']); ?></td>
+                                    <td>
                                         <?php 
-                                        $orario_inizio = format_time_excel($result->orario_inizio ?? '');
-                                        $orario_fine = format_time_excel($result->orario_fine ?? '');
-                                        
-                                        if (!empty($orario_inizio) && !empty($orario_fine) && $orario_fine != '00:00') {
-                                            echo $orario_inizio . '<br><span style="color: #666;">↓</span><br>' . $orario_fine;
-                                        } elseif (!empty($orario_inizio)) {
-                                            echo $orario_inizio;
+                                        if (!empty($row['data_evento'])) {
+                                            echo date('d/m/Y', strtotime($row['data_evento']));
                                         } else {
-                                            echo '<span style="color: #ccc;">N/A</span>';
+                                            echo '-';
                                         }
                                         ?>
                                     </td>
-                                    
-                                    <!-- 4. Numero invitati (int) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: center; font-weight: bold; color: #17a2b8;">
-                                        <?php echo intval($result->numero_invitati ?? 0); ?>
-                                    </td>
-                                    
-                                    <!-- 5. Referente (Nome + Cognome) - CAMPI DIRETTI -->
-                                    <td style="padding: 12px 8px; color: #2b1e1a;">
+                                    <td><?php echo esc_html($row['tipo_evento'] ?? '-'); ?></td>
+                                    <td><?php echo esc_html($row['tipo_menu'] ?? '-'); ?></td>
+                                    <td>
                                         <?php 
-                                        $nome = trim($result->referente_nome ?? '');
-                                        $cognome = trim($result->referente_cognome ?? '');
-                                        echo esc_html(trim($nome . ' ' . $cognome)) ?: 'N/A';
+                                        $nome_completo = trim(($row['nome_referente'] ?? '') . ' ' . ($row['cognome_referente'] ?? ''));
+                                        echo esc_html($nome_completo ?: '-');
                                         ?>
                                     </td>
-                                    
-                                    <!-- 6. Telefono (link WhatsApp) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: center;">
-                                        <?php if (!empty($result->telefono)): ?>
-                                            <a href="<?php echo format_whatsapp_link($result->telefono); ?>" 
+                                    <td><?php echo esc_html($row['numero_invitati'] ?? '-'); ?></td>
+                                    <td>
+                                        <?php 
+                                        if (!empty($row['importo'])) {
+                                            echo '€ ' . number_format($row['importo'], 2, ',', '.');
+                                        } else {
+                                            echo '-';
+                                        }
+                                        ?>
+                                    </td>
+                                    <td>
+                                        <?php 
+                                        $stato = 'Neutro';
+                                        if (!empty($row['filename'])) {
+                                            $filename_upper = strtoupper($row['filename']);
+                                            if (strpos($filename_upper, 'CONF') === 0) {
+                                                $stato = 'CONF';
+                                            } elseif (strpos($filename_upper, 'NO') === 0) {
+                                                $stato = 'NO';
+                                            }
+                                        }
+                                        
+                                        $badge_class = 'badge-secondary';
+                                        if ($stato === 'CONF') $badge_class = 'badge-success';
+                                        if ($stato === 'NO') $badge_class = 'badge-danger';
+                                        ?>
+                                        <span class="badge <?php echo $badge_class; ?>" style="padding: 4px 8px; border-radius: 4px; font-size: 11px;">
+                                            <?php echo esc_html($stato); ?>
+                                        </span>
+                                    </td>
+                                    <td>
+                                        <?php if (!empty($row['file_id'])): ?>
+                                            <a href="https://drive.google.com/file/d/<?php echo esc_attr($row['file_id']); ?>/view" 
                                                target="_blank" 
-                                               style="background: #25D366; color: white; padding: 6px 10px; border-radius: 15px; text-decoration: none; font-size: 0.85em; font-weight: 600;">
-                                                📱 <?php echo esc_html($result->telefono); ?>
+                                               title="<?php echo esc_attr($row['filename'] ?? 'Apri in Drive'); ?>"
+                                               style="color: #d4af37; text-decoration: none;">
+                                                📁 Drive
                                             </a>
                                         <?php else: ?>
-                                            <span style="color: #ccc;">N/A</span>
+                                            -
                                         <?php endif; ?>
                                     </td>
-                                    
-                                    <!-- 7. Email - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; color: #2b1e1a; font-size: 0.9em;">
-                                        <?php if (!empty($result->email)): ?>
-                                            <a href="mailto:<?php echo esc_attr($result->email); ?>" 
-                                               style="color: #17a2b8; text-decoration: none;">
-                                                <?php echo esc_html($result->email); ?>
-                                            </a>
-                                        <?php else: ?>
-                                            <span style="color: #ccc;">N/A</span>
-                                        <?php endif; ?>
+                                    <td>
+                                        <a href="<?php echo admin_url('admin.php?page=disco747-crm&action=form_preventivo&source=excel_analysis&analysis_id=' . $row['id']); ?>" 
+                                           class="button button-small"
+                                           title="Modifica preventivo">
+                                            ✏️ Modifica
+                                        </a>
                                     </td>
-                                    
-                                    <!-- 8. Menu - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: center; font-weight: bold;">
-                                        <span style="background: #17a2b8; color: white; padding: 4px 8px; border-radius: 12px; font-size: 0.85em;">
-                                            <?php echo esc_html($result->menu ?? 'N/A'); ?>
-                                        </span>
-                                    </td>
-                                    
-                                    <!-- 9. Importo totale (formattato: € 1.234,56) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: right; font-weight: bold; color: #28a745;">
-                                        <?php echo format_currency_excel($result->importo_totale ?? 0); ?>
-                                    </td>
-                                    
-                                    <!-- 10. Acconto (formattato) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: right; font-weight: bold; color: <?php echo floatval($result->acconto ?? 0) > 0 ? '#28a745' : '#6c757d'; ?>;">
-                                        <?php echo format_currency_excel($result->acconto ?? 0); ?>
-                                    </td>
-                                    
-                                    <!-- 11. Da saldare (formattato) - CAMPO DIRETTO -->
-                                    <td style="padding: 12px 8px; text-align: right; font-weight: bold; color: #ffc107;">
-                                        <?php echo format_currency_excel($result->da_saldare ?? 0); ?>
-                                    </td>
-                                    
-                                    <!-- 12. Omaggi (stringa unica separata da virgole) - CAMPO JSON O SEPARATI -->
-                                    <td style="padding: 12px 8px; color: #28a745; font-size: 0.9em;">
-                                        <?php 
-                                        echo !empty($omaggi) ? esc_html($omaggi) : '<span style="color: #ccc;">Nessuno</span>';
-                                        ?>
-                                    </td>
-                                    
-                                    <!-- 13. Extra (formato: Descr1 €X, Descr2 €Y) - CAMPO JSON O SEPARATI -->
-                                    <td style="padding: 12px 8px; color: #ff6b35; font-size: 0.9em;">
-                                        <?php 
-                                        echo !empty($extra) ? esc_html($extra) : '<span style="color: #ccc;">Nessuno</span>';
-                                        ?>
-                                    </td>
-                                    
-                                    <!-- 14. Stato (badge testuale) -->
-                                    <td style="padding: 12px 8px; text-align: center;">
-                                        <span class="status-badge <?php echo $stato['class']; ?>" 
-                                              style="background: <?php echo $stato['color']; ?>; color: white; padding: 6px 12px; border-radius: 15px; font-size: 0.85em; font-weight: 600;">
-                                            <?php echo $stato['text']; ?>
-                                        </span>
-                                    </td>
-                                    
-                                    <!-- 15. Azioni (pulsante modifica) -->
-                                    <td style="padding: 12px 8px; text-align: center;">
-                                        <?php if ($result->analysis_success): ?>
-                                            <?php
-                                            // CORRETTO: URL per modifica preventivo con dati pre-compilati
-                                            $edit_url = admin_url('admin.php?page=disco747-crm&action=edit_preventivo&source=excel_analysis&analysis_id=' . intval($result->id));
-                                            ?>
-                                            <a href="<?php echo esc_url($edit_url); ?>" 
-                                               class="disco747-button disco747-button-primary" 
-                                               style="padding: 6px 12px; font-size: 0.8em; text-decoration: none; border-radius: 6px; display: inline-block;"
-                                               title="Modifica preventivo con dati pre-compilati">
-                                                ✏️ Modifica
-                                            </a>
-                                        <?php else: ?>
-                                            <span style="color: #ccc; font-size: 0.8em;">Non disponibile</span>
-                                        <?php endif; ?>
-                                    </td>
-                                    
                                 </tr>
                             <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                </div>
-                
-                <!-- Paginazione se necessaria (da implementare) -->
-                <div style="text-align: center; margin-top: 20px; color: #666;">
-                    Visualizzati <?php echo count($analysis_results); ?> risultati
-                </div>
-                
-            <?php endif; ?>
-            
+                        <?php else: ?>
+                            <tr>
+                                <td colspan="10" style="text-align: center; padding: 20px;">
+                                    Nessuna analisi trovata. Avvia una scansione batch per popolare la tabella.
+                                </td>
+                            </tr>
+                        <?php endif; ?>
+                    </tbody>
+                </table>
+            </div>
         </div>
     </div>
-
+    
 </div>
 
-<!-- CSS Specificatamente per questa pagina -->
 <style>
 .disco747-card {
-    background: white;
-    border-radius: 15px;
-    box-shadow: 0 8px 25px rgba(43, 30, 26, 0.1);
-    overflow: hidden;
-    margin-bottom: 25px;
+    animation: fadeIn 0.5s ease-in;
 }
 
-.disco747-card-header {
-    background: linear-gradient(135deg, #2b1e1a 0%, #3d2f2a 100%);
-    color: white;
-    padding: 20px 25px;
-    font-size: 1.2rem;
-    font-weight: 600;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
-.disco747-card-content {
-    padding: 25px;
-}
-
-.disco747-notice {
-    padding: 15px 20px;
-    border-radius: 8px;
-    margin-bottom: 20px;
-    border-left: 5px solid;
-}
-
-.disco747-notice.success {
-    background: #d4edda;
-    color: #155724;
-    border-left-color: #28a745;
-}
-
-.disco747-notice.error {
-    background: #f8d7da;
-    color: #721c24;
-    border-left-color: #dc3545;
-}
-
-.disco747-notice.warning {
-    background: #fff3cd;
-    color: #856404;
-    border-left-color: #ffc107;
-}
-
-.disco747-notice.info {
-    background: #d1ecf1;
-    color: #0c5460;
-    border-left-color: #17a2b8;
-}
-
-.disco747-button {
-    padding: 10px 20px;
-    border-radius: 8px;
-    border: none;
-    cursor: pointer;
-    font-weight: 600;
-    text-decoration: none;
+.badge {
     display: inline-block;
-    transition: all 0.3s ease;
-    font-size: 14px;
-}
-
-.disco747-button-primary {
-    background: linear-gradient(135deg, #d4af37 0%, #f4e797 100%);
-    color: #2b1e1a;
-}
-
-.disco747-button-secondary {
-    background: #6c757d;
-    color: white;
-}
-
-.disco747-button-danger {
-    background: #dc3545;
-    color: white;
-}
-
-.disco747-button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-}
-
-.disco747-button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-    transform: none;
-}
-
-/* Batch Analysis Styles */
-.batch-stats {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 15px;
-    margin: 20px 0;
-}
-
-.batch-stat-card {
-    background: #f8f9fa;
-    padding: 20px;
-    border-radius: 10px;
-    text-align: center;
-    border: 2px solid #e9ecef;
-}
-
-.batch-stat-number {
-    font-size: 2rem;
-    font-weight: bold;
-    margin-bottom: 5px;
-}
-
-.batch-progress-container {
-    margin: 25px 0;
-}
-
-.batch-timer {
-    text-align: center;
-    font-size: 1.2rem;
-    font-weight: bold;
-    color: #2b1e1a;
-    margin-bottom: 15px;
-}
-
-.batch-progress-bar {
-    width: 100%;
-    height: 25px;
-    background: #e9ecef;
-    border-radius: 15px;
-    overflow: hidden;
-    margin-bottom: 10px;
-}
-
-.batch-progress-fill {
-    height: 100%;
-    background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
-    width: 0%;
-    transition: width 0.3s ease;
-}
-
-.batch-controls {
-    text-align: center;
-    margin: 25px 0;
-}
-
-/* Tabella risultati batch */
-.batch-results-table {
-    width: 100%;
-    border-collapse: collapse;
-    background: white;
-}
-
-.batch-results-table th {
-    background: linear-gradient(135deg, #2b1e1a 0%, #3d2f2a 100%);
-    color: white;
-    padding: 12px 8px;
-    text-align: left;
     font-weight: 600;
-    font-size: 0.9rem;
+    text-transform: uppercase;
 }
 
-.batch-results-table td {
-    padding: 10px 8px;
-    border-bottom: 1px solid #e9ecef;
-    font-size: 0.85rem;
+.badge-success { background: #28a745; color: white; }
+.badge-danger { background: #dc3545; color: white; }
+.badge-secondary { background: #6c757d; color: white; }
+
+.log-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid #dee2e6;
 }
 
-.batch-results-table tr:nth-child(even) {
-    background: #f8f9fa;
-}
-
-.batch-results-table .status-badge {
-    padding: 4px 8px;
-    border-radius: 12px;
-    font-size: 0.75em;
-    font-weight: 600;
-    white-space: nowrap;
-}
-
-.status-warning { background: #ffc107; color: #212529; }
-.status-success { background: #28a745; color: white; }
-.status-error { background: #dc3545; color: white; }
-
-/* Stili responsive per la tabella analisi */
-.analysis-results-table th {
-    font-size: 0.85em;
-    white-space: nowrap;
-}
-
-.analysis-results-table td {
-    font-size: 0.9em;
-    vertical-align: top;
-}
-
-.table-responsive {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-}
-
-.analysis-row:hover {
-    background: #f1f3f4 !important;
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    transition: all 0.2s ease;
-}
-
-.status-badge {
-    display: inline-block;
-    white-space: nowrap;
-}
-
-@media (max-width: 1200px) {
-    .analysis-results-table {
-        font-size: 0.8em;
-    }
-    
-    .analysis-results-table th,
-    .analysis-results-table td {
-        padding: 8px 4px;
-    }
-}
-
-/* Responsive */
-@media (max-width: 768px) {
-    .disco747-excel-scan-wrapper {
-        padding: 10px;
-    }
-    
-    .disco747-card-header {
-        padding: 15px 20px;
-        font-size: 1.1rem;
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 10px;
-    }
-    
-    .disco747-card-content {
-        padding: 20px;
-    }
-    
-    .batch-stats {
-        grid-template-columns: repeat(2, 1fr);
-    }
-    
-    .table-responsive {
-        font-size: 0.75em;
-    }
-    
-    .analysis-filters {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    
-    .analysis-filters > div {
-        margin-bottom: 10px;
-    }
-}
+.log-entry.error { color: #dc3545; }
+.log-entry.success { color: #28a745; }
+.log-entry.warning { color: #ffc107; }
+.log-entry.info { color: #17a2b8; }
 </style>
 
-<!-- JavaScript COMPLETO CON BATCH ANALYSIS -->
 <script>
 jQuery(document).ready(function($) {
-    console.log('Inizializzazione Excel Scanner...');
+    // Debug log functions
+    function addDebugLog(message, type = 'info') {
+        const time = new Date().toLocaleTimeString();
+        const logEntry = $('<div class="log-entry ' + type + '">[' + time + '] ' + message + '</div>');
+        $('#debug-log').append(logEntry);
+        
+        // Auto scroll
+        const debugLog = $('#debug-log')[0];
+        if (debugLog) {
+            debugLog.scrollTop = debugLog.scrollHeight;
+        }
+    }
     
-    // Variabili globali per batch analysis
+    // Toggle debug
+    $('#toggle-debug').on('click', function() {
+        $('#debug-content').slideToggle();
+        addDebugLog('Debug panel toggled');
+    });
+    
+    // Clear debug
+    $('#clear-debug').on('click', function() {
+        $('#debug-log').html('<div class="log-entry info">[' + new Date().toLocaleTimeString() + '] Log cleared</div>');
+    });
+    
+    // Batch scanning
     let batchFiles = <?php echo json_encode($excel_files_list); ?>;
-    let isRunningBatch = false;
-    let startTime = null;
-    let timerInterval = null;
-    let currentFileIndex = 0;
+    let currentIndex = 0;
+    let isScanning = false;
+    let batchStartTime = null;
+    let batchTimer = null;
     let successCount = 0;
     let errorCount = 0;
     
-    // Debug log function
-    function addDebugLog(message, type = 'info') {
-        const now = new Date();
-        const timestamp = now.toLocaleTimeString('it-IT');
-        const typeColors = {
-            'info': '#17a2b8',
-            'success': '#28a745',
-            'warning': '#ffc107',
-            'error': '#dc3545'
-        };
+    $('#start-batch').on('click', function() {
+        if (isScanning) return;
         
-        const logContainer = $('#debug-log-container #debug-log');
-        if (logContainer.length === 0) {
-            console.log(`[${timestamp}] ${message}`);
-            return;
-        }
+        addDebugLog('=== INIZIO SCANSIONE BATCH ===', 'info');
+        addDebugLog('File da processare: ' + batchFiles.length, 'info');
         
-        const logEntry = `
-            <div style="margin-bottom: 5px; padding: 8px 12px; background: #f8f9fa; border-left: 4px solid ${typeColors[type]}; border-radius: 4px; font-size: 0.85em;">
-                <span style="color: #666; font-weight: bold;">[${timestamp}]</span>
-                <span style="color: ${typeColors[type]}; font-weight: 600; text-transform: uppercase; margin-left: 10px;">${type}</span>
-                <span style="margin-left: 10px;">${message}</span>
-            </div>
-        `;
-        
-        logContainer.append(logEntry);
-        
-        // Auto-scroll se abilitato
-        if ($('#auto-scroll-log').is(':checked')) {
-            logContainer.scrollTop(logContainer[0].scrollHeight);
-        }
-        
-        // Limita numero massimo di righe log
-        const maxLines = 500;
-        const logEntries = logContainer.children();
-        if (logEntries.length > maxLines) {
-            logEntries.first().remove();
-        }
-    }
-    
-    // Aggiorna statistiche batch
-    function updateStats() {
-        $('#stat-success').text(successCount);
-        $('#stat-errors').text(errorCount);
-        
-        const totalProcessed = successCount + errorCount;
-        const rate = totalProcessed > 0 ? Math.round((successCount / totalProcessed) * 100) : 0;
-        $('#stat-rate').text(rate + '%');
-        
-        const remaining = Math.max(0, batchFiles.length - totalProcessed);
-        $('#stat-remaining').text(remaining);
-        
-        // Aggiorna progress bar
-        if (batchFiles.length > 0) {
-            const progress = Math.round((totalProcessed / batchFiles.length) * 100);
-            $('#batch-progress').css('width', progress + '%');
-            $('#progress-text').text(`File ${totalProcessed} di ${batchFiles.length} processati (${progress}%)`);
-        }
-    }
-    
-    // Aggiorna timer batch
-    function updateTimer() {
-        if (!startTime) return;
-        
-        const elapsed = new Date() - startTime;
-        const hours = Math.floor(elapsed / 3600000);
-        const minutes = Math.floor((elapsed % 3600000) / 60000);
-        const seconds = Math.floor((elapsed % 60000) / 1000);
-        
-        $('#batch-timer').text(
-            String(hours).padStart(2, '0') + ':' +
-            String(minutes).padStart(2, '0') + ':' +
-            String(seconds).padStart(2, '0')
-        );
-    }
-    
-    // Crea riga risultato batch
-    function createBatchResultRow(fileNumber, fileName) {
-        return `
-            <tr id="batch-row-${fileNumber + 1}">
-                <td style="padding: 8px; text-align: center; font-weight: bold;">${fileNumber + 1}</td>
-                <td style="padding: 8px;" title="${fileName}">${fileName.length > 32 ? fileName.substring(0, 32) + '...' : fileName}</td>
-                <td style="padding: 8px;"><span class="batch-data-evento">-</span></td>
-                <td style="padding: 8px;"><span class="batch-tipo-evento">-</span></td>
-                <td style="padding: 8px;"><span class="batch-menu">-</span></td>
-                <td style="padding: 8px; text-align: center;"><span class="batch-invitati">-</span></td>
-                <td style="padding: 8px; text-align: right;"><span class="batch-importo">-</span></td>
-                <td style="padding: 8px; text-align: center;">
-                    <span class="status-badge status-warning">⏳ In attesa</span>
-                </td>
-            </tr>
-        `;
-    }
-    
-    // Aggiorna riga risultato batch
-    function updateBatchResultRow(fileNumber, data, status) {
-        const row = $(`#batch-row-${fileNumber}`);
-        
-        if (status === 'processing') {
-            row.removeClass('success error').addClass('processing');
-            row.find('.status-badge').removeClass('status-success status-error status-warning')
-               .addClass('status-warning').html('⏳ Analisi...');
-        } else if (status === 'success') {
-            row.removeClass('processing error').addClass('success');
-            row.find('.status-badge').removeClass('status-warning status-error')
-               .addClass('status-success').html('✅ Successo');
-               
-            // Popola dati se disponibili
-            if (data) {
-                row.find('.batch-data-evento').text(data.data_evento || 'N/A');
-                row.find('.batch-tipo-evento').text(data.tipo_evento || 'N/A');
-                row.find('.batch-menu').text(data.menu || 'N/A');
-                row.find('.batch-invitati').text(data.numero_invitati || '0');
-                
-                const importo = parseFloat(data.importo_totale || 0);
-                row.find('.batch-importo').text(importo > 0 ? '€' + importo.toFixed(2) : '-');
-            }
-        } else if (status === 'error') {
-            row.removeClass('processing success').addClass('error');
-            row.find('.status-badge').removeClass('status-warning status-success')
-               .addClass('status-error').html('❌ Errore');
-        }
-    }
-    
-    // Handler avvio batch analysis
-    $('#start-batch-analysis').on('click', function() {
-        if (batchFiles.length === 0) {
-            alert('Nessun file Excel da analizzare.');
-            return;
-        }
-        
-        const confirmed = confirm(
-            `Sei sicuro di voler analizzare TUTTI i ${batchFiles.length} file Excel?\n\n` +
-            `Questa operazione può richiedere diversi minuti e i risultati verranno salvati automaticamente nel database.`
-        );
-        
-        if (!confirmed) return;
-        
-        // Inizializza batch
-        isRunningBatch = true;
-        currentFileIndex = 0;
+        isScanning = true;
+        currentIndex = 0;
         successCount = 0;
         errorCount = 0;
-        startTime = new Date();
+        batchStartTime = Date.now();
         
-        // Mostra controlli
-        $('#start-batch-analysis').hide();
-        $('#stop-batch-analysis').show();
-        $('#batch-results-container').show();
+        $('#start-batch').hide();
+        $('#stop-batch').show();
+        $('#batch-progress').slideDown();
         
-        // Avvia timer
-        timerInterval = setInterval(updateTimer, 1000);
+        $('#batch-total').text(batchFiles.length);
         
-        // Crea righe tabella
-        const tbody = $('#batch-results-body');
-        tbody.empty();
+        // Start timer
+        batchTimer = setInterval(function() {
+            const elapsed = Math.floor((Date.now() - batchStartTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+            $('#batch-time').text(
+                (minutes < 10 ? '0' : '') + minutes + ':' + 
+                (seconds < 10 ? '0' : '') + seconds
+            );
+        }, 1000);
         
-        batchFiles.forEach((file, index) => {
-            tbody.append(createBatchResultRow(index, file.name));
-        });
-        
-        addDebugLog('🚀 ANALISI BATCH AVVIATA', 'success');
-        addDebugLog(`📄 File da analizzare: ${batchFiles.length}`, 'info');
-        
-        // Avvia processo
-        processBatchFile();
+        // Process next file
+        processNextFile();
     });
     
-    // Handler stop batch analysis
-    $('#stop-batch-analysis').on('click', function() {
-        if (confirm('Sei sicuro di voler fermare l\'analisi batch?')) {
-            isRunningBatch = false;
-            clearInterval(timerInterval);
-            
-            $('#start-batch-analysis').show();
-            $('#stop-batch-analysis').hide();
-            
-            addDebugLog('⏹️ ANALISI BATCH FERMATA DALL\'UTENTE', 'warning');
-        }
+    $('#stop-batch').on('click', function() {
+        addDebugLog('Scansione fermata dall\'utente', 'warning');
+        stopBatch();
     });
     
-    // Funzione principale batch processing
-    function processBatchFile() {
-        if (!isRunningBatch || currentFileIndex >= batchFiles.length) {
-            completeBatchAnalysis();
+    function processNextFile() {
+        if (!isScanning || currentIndex >= batchFiles.length) {
+            completeBatch();
             return;
         }
         
-        const file = batchFiles[currentFileIndex];
-        const fileNumber = currentFileIndex + 1;
+        const file = batchFiles[currentIndex];
+        const fileNum = currentIndex + 1;
         
-        addDebugLog(`📄 Analisi file ${fileNumber}/${batchFiles.length}: ${file.name}`, 'info');
+        $('#batch-current').text(fileNum);
+        $('#batch-status').text('Analizzando: ' + file.name);
         
-        // Aggiorna stato riga
-        updateBatchResultRow(fileNumber, null, 'processing');
+        const progress = (fileNum / batchFiles.length) * 100;
+        $('#batch-progress-bar').css('width', progress + '%');
         
-        // Chiamata AJAX
+        addDebugLog('[' + fileNum + '/' + batchFiles.length + '] Analizzando: ' + file.name);
+        
         $.ajax({
-            url: ajaxurl,
+            url: disco747ExcelScan.ajaxurl,
             type: 'POST',
             data: {
                 action: 'disco747_batch_scan_excel',
-                nonce: '<?php echo wp_create_nonce("disco747_batch_scan"); ?>',
+                nonce: disco747ExcelScan.nonce,
                 file_id: file.id,
                 file_name: file.name,
                 file_path: file.path || '',
-                current_index: currentFileIndex,
+                current_index: currentIndex,
                 total_files: batchFiles.length
             },
             success: function(response) {
-                if (response.success && response.data && response.data.ok) {
+                if (response.success && response.data.ok) {
                     successCount++;
-                    addDebugLog(`✅ File ${fileNumber} analizzato con successo`, 'success');
+                    $('#batch-success').text(successCount);
+                    addDebugLog('✅ File analizzato con successo', 'success');
                     
-                    // Aggiorna riga nella tabella
-                    updateBatchResultRow(fileNumber, response.data.data, 'success');
-                    
-                    // Log dati se disponibili
-                    const data = response.data.data;
-                    if (data) {
-                        addDebugLog(`📊 Menu: ${data.menu || 'N/A'}, Data: ${data.data_evento || 'N/A'}, Invitati: ${data.numero_invitati || 'N/A'}`, 'info');
+                    if (response.data.data) {
+                        const data = response.data.data;
+                        addDebugLog('  Menu: ' + (data.tipo_menu || 'N/A') + 
+                                  ', Invitati: ' + (data.numero_invitati || 'N/A') +
+                                  ', Importo: €' + (data.importo || '0'), 'info');
                     }
                 } else {
                     errorCount++;
-                    addDebugLog(`❌ File ${fileNumber} con errori: ${response.data?.error || 'Errore sconosciuto'}`, 'error');
-                    
-                    // Aggiorna riga nella tabella con errore
-                    updateBatchResultRow(fileNumber, response.data, 'error');
+                    $('#batch-errors').text(errorCount);
+                    const errorMsg = response.data ? response.data.error : 'Errore sconosciuto';
+                    addDebugLog('❌ Errore: ' + errorMsg, 'error');
                 }
-                
-                // Aggiorna statistiche
-                updateStats();
-                
-                // Processa file successivo
-                currentFileIndex++;
-                setTimeout(processBatchFile, 500);
             },
             error: function(xhr, status, error) {
                 errorCount++;
-                addDebugLog(`❌ Errore AJAX per file ${fileNumber}: ${error}`, 'error');
-                
-                // Aggiorna riga con errore
-                updateBatchResultRow(fileNumber, {}, 'error');
-                
-                // Aggiorna statistiche
-                updateStats();
-                
-                // Processa file successivo
-                currentFileIndex++;
-                setTimeout(processBatchFile, 500);
+                $('#batch-errors').text(errorCount);
+                addDebugLog('❌ Errore AJAX: ' + error, 'error');
+            },
+            complete: function() {
+                currentIndex++;
+                setTimeout(processNextFile, 500); // Small delay between files
             }
         });
     }
     
-    // Completa analisi batch
-    function completeBatchAnalysis() {
-        isRunningBatch = false;
-        clearInterval(timerInterval);
+    function completeBatch() {
+        isScanning = false;
+        clearInterval(batchTimer);
         
-        $('#start-batch-analysis').show();
-        $('#stop-batch-analysis').hide();
+        $('#batch-status').text('Scansione completata!');
+        $('#stop-batch').hide();
+        $('#start-batch').show();
         
-        const totalFiles = batchFiles.length;
-        const successFiles = successCount;
-        const errorFiles = errorCount;
-        const successRate = totalFiles > 0 ? Math.round((successFiles / totalFiles) * 100) : 0;
+        addDebugLog('=== SCANSIONE COMPLETATA ===', 'info');
+        addDebugLog('Successi: ' + successCount + ', Errori: ' + errorCount, 'info');
         
-        addDebugLog('🎉 ANALISI BATCH COMPLETATA', 'success');
-        addDebugLog(`📊 Risultati: ${successFiles} successi, ${errorFiles} errori su ${totalFiles} file`, 'info');
-        
-        // Notifica e ricarica automatica
-        alert(`🎉 Analisi Batch Completata!\n\nSuccessi: ${successFiles}\nErrori: ${errorFiles}\nTasso di successo: ${successRate}%\n\nLa pagina si ricaricherà per mostrare tutti i risultati salvati nel database.`);
-        
-        // Ricarica la pagina dopo 3 secondi per mostrare i risultati dal database
+        // Reload table
         setTimeout(function() {
-            window.location.reload();
-        }, 3000);
+            $('#refresh-table').click();
+        }, 1000);
     }
     
-    // Toggle debug log
-    $('#toggle-debug-log').on('click', function() {
-        $('#debug-log-container').toggle();
-        const isVisible = $('#debug-log-container').is(':visible');
-        $(this).text(isVisible ? '👁️ Nascondi Log' : '👁️ Mostra Log');
+    function stopBatch() {
+        isScanning = false;
+        clearInterval(batchTimer);
         
-        addDebugLog(`Log debug ${isVisible ? 'mostrato' : 'nascosto'}`, 'info');
+        $('#batch-status').text('Scansione interrotta');
+        $('#stop-batch').hide();
+        $('#start-batch').show();
+    }
+    
+    // Refresh table
+    $('#refresh-table').on('click', function() {
+        addDebugLog('Aggiornamento tabella...', 'info');
+        location.reload();
     });
     
-    // Pulisci debug log
-    $('#clear-debug-log').on('click', function() {
-        $('#debug-log-container #debug-log').empty();
-        addDebugLog('Log debug pulito', 'success');
-    });
+    // Table filters
+    let filterTimeout = null;
     
-    // Scarica debug log
-    $('#download-debug-log').on('click', function() {
-        const logContent = $('#debug-log-container #debug-log').text();
-        
-        if (!logContent.trim()) {
-            alert('Nessun log da scaricare');
-            return;
-        }
-        
-        const blob = new Blob([logContent], { type: 'text/plain' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `disco747-excel-scan-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-        
-        addDebugLog('💾 Log scaricato', 'success');
-    });
-    
-    // Filtri tabella risultati (aggiornati per nuova struttura colonne)
-    $('#apply-filters').on('click', function() {
+    function filterTable() {
         const searchTerm = $('#search-analysis').val().toLowerCase();
         const menuFilter = $('#filter-menu').val();
-        const successFilter = $('#filter-success').val();
+        const statoFilter = $('#filter-stato').val();
         
-        $('.table-row').each(function() {
-            const row = $(this);
-            let showRow = true;
+        $('#analysis-tbody tr').each(function() {
+            const $row = $(this);
+            const text = $row.text().toLowerCase();
+            const menu = $row.find('td:eq(3)').text();
+            const stato = $row.find('td:eq(7) .badge').text();
             
-            // Filtro ricerca
-            if (searchTerm) {
-                const rowText = row.text().toLowerCase();
-                if (rowText.indexOf(searchTerm) === -1) {
-                    showRow = false;
-                }
+            let show = true;
+            
+            if (searchTerm && !text.includes(searchTerm)) {
+                show = false;
             }
             
-            // Filtro menu - colonna Menu è la 8a
-            if (menuFilter) {
-                const menuCell = row.find('td:nth-child(8)').text().trim();
-                if (menuCell !== menuFilter) {
-                    showRow = false;
-                }
+            if (menuFilter && !menu.includes(menuFilter)) {
+                show = false;
             }
             
-            // Filtro stato - ora è la colonna 14a
-            if (successFilter !== '') {
-                const statusCell = row.find('td:nth-child(14) .status-badge');
-                const isSuccess = statusCell.hasClass('stato-confermato');
-                if ((successFilter === '1' && !isSuccess) || (successFilter === '0' && isSuccess)) {
-                    showRow = false;
-                }
+            if (statoFilter && stato !== statoFilter) {
+                show = false;
             }
             
-            row.toggle(showRow);
+            $row.toggle(show);
         });
-        
-        addDebugLog(`🔍 Filtri applicati: ricerca="${searchTerm}", menu="${menuFilter}", stato="${successFilter}"`, 'info');
-    });
-    
-    $('#reset-filters').on('click', function() {
-        $('#search-analysis').val('');
-        $('#filter-menu').val('');
-        $('#filter-success').val('');
-        $('.table-row').show();
-        
-        addDebugLog('🔄 Filtri resettati', 'info');
-    });
-    
-    // Inizializzazione
-    updateStats();
-    addDebugLog('🔧 Interfaccia JavaScript inizializzata', 'success');
-    if (batchFiles.length > 0) {
-        addDebugLog(`📄 Pronti per l'analisi: ${batchFiles.length} file Excel`, 'info');
     }
     
-    // Log della tabella se presente
-    const tableRows = $('.table-row').length;
-    if (tableRows > 0) {
-        addDebugLog(`📊 Tabella risultati caricata: ${tableRows} analisi trovate`, 'info');
-    }
+    $('#search-analysis, #filter-menu, #filter-stato').on('input change', function() {
+        clearTimeout(filterTimeout);
+        filterTimeout = setTimeout(filterTable, 300);
+    });
     
-    console.log('Excel Scanner inizializzazione completata');
+    // Initial log
+    addDebugLog('Sistema Excel Scan inizializzato', 'success');
+    addDebugLog('File disponibili: ' + batchFiles.length, 'info');
 });
 </script>

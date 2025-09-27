@@ -1,12 +1,10 @@
 <?php
 /**
- * Storage Manager - 747 Disco CRM
- * VERSIONE CORRETTA: Mantiene nome file originale
- * ✅ BUGFIX v11.7.1: Aggiunto metodo upload_to_googledrive con data_evento
+ * Storage Manager per gestione unificata storage providers
  * 
  * @package    Disco747_CRM
  * @subpackage Storage
- * @version    11.7.1-BUGFIX
+ * @version    11.6.1-FIXED
  */
 
 namespace Disco747_CRM\Storage;
@@ -17,218 +15,445 @@ if (!defined('ABSPATH')) {
 
 class Disco747_Storage_Manager {
     
-    private $storage_type;
-    private $active_storage = null;
-    private $debug_mode = true;
+    private $config;
+    private $active_handler = null;
+    private $googledrive_handler = null;
+    private $dropbox_handler = null;
+    private $storage_type = 'googledrive'; // Default
     
-    public function __construct() {
+    /**
+     * Costruttore
+     */
+    public function __construct($config = null) {
+        $this->config = $config;
+        $this->initialize();
+    }
+    
+    /**
+     * Inizializzazione
+     */
+    private function initialize() {
+        // Determina il tipo di storage dalle impostazioni
         $this->storage_type = get_option('disco747_storage_type', 'googledrive');
-        $this->initialize_storage();
-        $this->log('[StorageManager] Inizializzato con tipo: ' . $this->storage_type);
-    }
-    
-    private function log($message) {
-        if ($this->debug_mode) {
-            error_log("[747Disco-CRM] {$message}");
-        }
-    }
-    
-    private function initialize_storage() {
-        try {
-            if ($this->storage_type === 'googledrive') {
-                if (!class_exists('\Disco747_CRM\Storage\Disco747_GoogleDrive')) {
-                    throw new \RuntimeException('Classe GoogleDrive non trovata');
-                }
-                $this->active_storage = new Disco747_GoogleDrive();
-                $this->log('[StorageManager] Google Drive handler inizializzato');
-            } else {
-                if (!class_exists('\Disco747_CRM\Storage\Disco747_Dropbox')) {
-                    throw new \RuntimeException('Classe Dropbox non trovata');
-                }
-                $this->active_storage = new Disco747_Dropbox();
-                $this->log('[StorageManager] Dropbox handler inizializzato');
-            }
-        } catch (\Throwable $e) {
-            $this->log('[StorageManager] [ERROR] Errore inizializzazione: ' . $e->getMessage());
-            $this->active_storage = null;
-        }
-    }
-    
-    /**
-     * ✅ BUGFIX: Upload diretto su Google Drive con dati preventivo
-     * NUOVO METODO per passare correttamente la data_evento a Google Drive
-     * 
-     * @param string $local_file_path Percorso file locale
-     * @param string $remote_filename Nome file remoto (già corretto)
-     * @param string $data_evento Data evento in formato Y-m-d
-     * @return mixed Risultato upload
-     */
-    public function upload_to_googledrive($local_file_path, $remote_filename, $data_evento) {
-        if ($this->storage_type !== 'googledrive') {
-            $this->log('[StorageManager] Storage non è Google Drive, tipo attuale: ' . $this->storage_type);
-            return false;
-        }
         
-        if (!$this->active_storage) {
-            $this->log('[StorageManager] [ERROR] Google Drive non inizializzato');
-            return false;
-        }
-        
-        if (!file_exists($local_file_path)) {
-            $this->log("[StorageManager] [ERROR] File non trovato: {$local_file_path}");
-            return false;
-        }
-        
-        // ✅ CORREZIONE: Chiama il metodo upload_to_googledrive di Google Drive
-        // passando la data_evento corretta per organizzare i file nella cartella giusta
-        if (method_exists($this->active_storage, 'upload_to_googledrive')) {
-            $file_size = filesize($local_file_path);
-            
-            $this->log("[StorageManager] 📤 Upload {$remote_filename} ({$file_size} bytes)");
-            $this->log("[StorageManager] ✅ Data evento: {$data_evento}");
-            
-            try {
-                $result = $this->active_storage->upload_to_googledrive(
-                    $local_file_path,
-                    $remote_filename,
-                    $data_evento
-                );
+        // Inizializza l'handler appropriato
+        switch ($this->storage_type) {
+            case 'googledrive':
+                $this->initialize_googledrive();
+                break;
                 
-                if ($result) {
-                    $this->log("[StorageManager] ✅ Upload completato: {$remote_filename}");
-                    return $result;
-                } else {
-                    $this->log("[StorageManager] [WARNING] Upload fallito per: {$remote_filename}");
-                    return false;
-                }
+            case 'dropbox':
+                $this->initialize_dropbox();
+                break;
                 
-            } catch (\Exception $e) {
-                $this->log("[StorageManager] [ERROR] Eccezione upload: " . $e->getMessage());
-                return false;
-            }
-        } else {
-            $this->log('[StorageManager] [ERROR] Metodo upload_to_googledrive non trovato in Google Drive handler');
-            return false;
+            case 'both':
+                $this->initialize_googledrive();
+                $this->initialize_dropbox();
+                break;
         }
+        
+        error_log('[747Disco-CRM] [StorageManager] Inizializzato con tipo: ' . $this->storage_type);
     }
     
     /**
-     * CORREZIONE: Upload file mantenendo il nome originale
-     * [METODO ESISTENTE - NON MODIFICATO]
+     * Inizializza Google Drive handler
      */
-    public function upload_file($local_file_path, $folder_context = '') {
+    private function initialize_googledrive() {
         try {
-            if (!$this->active_storage) {
-                $this->log('[StorageManager] [ERROR] Storage non inizializzato');
-                return false;
+            if (!class_exists('Disco747_CRM\Storage\Disco747_GoogleDrive')) {
+                require_once DISCO747_CRM_PLUGIN_DIR . 'includes/storage/class-disco747-googledrive.php';
             }
             
-            if (!file_exists($local_file_path)) {
-                $this->log("[StorageManager] [ERROR] File non trovato: {$local_file_path}");
-                return false;
-            }
+            $this->googledrive_handler = new Disco747_GoogleDrive($this->config);
             
-            // USA IL NOME FILE ORIGINALE
-            $filename = basename($local_file_path);
-            $file_size = filesize($local_file_path);
-            
-            $this->log("[StorageManager] Inizio upload file: {$filename} ({$file_size} bytes)");
-            $this->log("[StorageManager] ✅ MANTIENI NOME ORIGINALE: {$filename}");
-            
+            // Imposta come handler attivo se è il tipo selezionato
             if ($this->storage_type === 'googledrive') {
-                if (method_exists($this->active_storage, 'upload_file')) {
-                    // PASSA NULL COME DATA EVENTO PER NON RIGENERARE IL NOME
-                    $result = $this->active_storage->upload_file($local_file_path, $filename, null);
-                    
-                    if ($result && isset($result['status']) && $result['status'] === 'ok') {
-                        $this->log("[StorageManager] ✅ Upload completato: {$filename}");
-                        return $result['webViewLink'] ?? $result['webContentLink'] ?? true;
-                    } else {
-                        $this->log("[StorageManager] [WARNING] Upload senza URL");
-                        return false;
-                    }
-                } else {
-                    $this->log('[StorageManager] [ERROR] Metodo upload_file non trovato');
-                    return false;
-                }
-            } else {
-                // Dropbox
-                if (method_exists($this->active_storage, 'upload_file')) {
-                    $result = $this->active_storage->upload_file($local_file_path, $filename);
-                    return $result;
-                } else {
-                    $this->log('[StorageManager] [ERROR] Metodo upload non trovato per Dropbox');
-                    return false;
-                }
+                $this->active_handler = $this->googledrive_handler;
             }
             
-        } catch (\Throwable $e) {
-            $this->log("[StorageManager] [ERROR] Upload fallito: " . $e->getMessage());
-            return false;
+            error_log('[747Disco-CRM] [StorageManager] Google Drive handler inizializzato');
+            
+        } catch (\Exception $e) {
+            error_log('[747Disco-CRM] [StorageManager] Errore inizializzazione Google Drive: ' . $e->getMessage());
         }
     }
     
     /**
-     * Delete file from storage
-     * [METODO ESISTENTE - NON MODIFICATO]
+     * Inizializza Dropbox handler
      */
-    public function delete_file($file_url) {
-        if (!$this->active_storage) {
-            $this->log('[StorageManager] Storage non disponibile per eliminazione');
-            return false;
-        }
-        
+    private function initialize_dropbox() {
         try {
-            if (method_exists($this->active_storage, 'delete_file')) {
-                return $this->active_storage->delete_file($file_url);
+            if (!class_exists('Disco747_CRM\Storage\Disco747_Dropbox')) {
+                require_once DISCO747_CRM_PLUGIN_DIR . 'includes/storage/class-disco747-dropbox.php';
             }
             
-            $this->log('[StorageManager] Metodo delete_file non disponibile');
-            return false;
+            $this->dropbox_handler = new Disco747_Dropbox($this->config);
             
-        } catch (\Throwable $e) {
-            $this->log('[StorageManager] Errore eliminazione: ' . $e->getMessage());
-            return false;
+            // Imposta come handler attivo se è il tipo selezionato
+            if ($this->storage_type === 'dropbox') {
+                $this->active_handler = $this->dropbox_handler;
+            }
+            
+            error_log('[747Disco-CRM] [StorageManager] Dropbox handler inizializzato');
+            
+        } catch (\Exception $e) {
+            error_log('[747Disco-CRM] [StorageManager] Errore inizializzazione Dropbox: ' . $e->getMessage());
         }
     }
     
     /**
-     * Test storage connection
-     * [METODO ESISTENTE - NON MODIFICATO]
+     * METODO AGGIUNTO: Get Google Drive service
+     * Restituisce il servizio Google Drive dal handler
      */
-    public function test_connection() {
-        if (!$this->active_storage) {
-            return array('success' => false, 'message' => 'Storage non inizializzato');
+    public function get_drive_service() {
+        if ($this->googledrive_handler) {
+            // Assumiamo che il GoogleDrive handler abbia un metodo get_service()
+            if (method_exists($this->googledrive_handler, 'get_service')) {
+                return $this->googledrive_handler->get_service();
+            }
+            
+            // Altrimenti prova ad accedere direttamente alla proprietà service
+            if (property_exists($this->googledrive_handler, 'service')) {
+                return $this->googledrive_handler->service;
+            }
+            
+            // Ultimo tentativo: prova a ottenere il client e creare il servizio
+            if (method_exists($this->googledrive_handler, 'get_client')) {
+                $client = $this->googledrive_handler->get_client();
+                if ($client && $client->getAccessToken()) {
+                    return new \Google_Service_Drive($client);
+                }
+            }
         }
         
-        if (method_exists($this->active_storage, 'test_connection')) {
-            return $this->active_storage->test_connection();
-        }
-        
-        return array('success' => false, 'message' => 'Metodo test non disponibile');
+        error_log('[747Disco-CRM] [StorageManager] Drive service non disponibile');
+        return null;
     }
     
     /**
-     * Check if storage is configured
-     * [METODO ESISTENTE - NON MODIFICATO]
+     * Verifica se lo storage è configurato
      */
     public function is_configured() {
-        return $this->active_storage !== null;
+        if ($this->active_handler && method_exists($this->active_handler, 'is_configured')) {
+            return $this->active_handler->is_configured();
+        }
+        return false;
+    }
+    
+    /**
+     * Upload file
+     */
+    public function upload_file($file_path, $folder_path = '', $options = array()) {
+        $results = array();
+        
+        // Se è attivo "both", carica su entrambi
+        if ($this->storage_type === 'both') {
+            if ($this->googledrive_handler) {
+                $results['googledrive'] = $this->googledrive_handler->upload_file($file_path, $folder_path, $options);
+            }
+            if ($this->dropbox_handler) {
+                $results['dropbox'] = $this->dropbox_handler->upload_file($file_path, $folder_path, $options);
+            }
+            return $results;
+        }
+        
+        // Altrimenti usa l'handler attivo
+        if ($this->active_handler) {
+            return $this->active_handler->upload_file($file_path, $folder_path, $options);
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Download file
+     */
+    public function download_file($file_id, $destination_path = null) {
+        if ($this->active_handler) {
+            return $this->active_handler->download_file($file_id, $destination_path);
+        }
+        return false;
+    }
+    
+    /**
+     * Delete file
+     */
+    public function delete_file($file_id) {
+        if ($this->active_handler) {
+            return $this->active_handler->delete_file($file_id);
+        }
+        return false;
+    }
+    
+    /**
+     * List files
+     */
+    public function list_files($folder_path = '') {
+        if ($this->active_handler) {
+            return $this->active_handler->list_files($folder_path);
+        }
+        return array();
+    }
+    
+    /**
+     * Create folder
+     */
+    public function create_folder($folder_path, $parent_id = null) {
+        $results = array();
+        
+        // Se è attivo "both", crea su entrambi
+        if ($this->storage_type === 'both') {
+            if ($this->googledrive_handler) {
+                $results['googledrive'] = $this->googledrive_handler->create_folder($folder_path, $parent_id);
+            }
+            if ($this->dropbox_handler) {
+                $results['dropbox'] = $this->dropbox_handler->create_folder($folder_path, $parent_id);
+            }
+            return $results;
+        }
+        
+        // Altrimenti usa l'handler attivo
+        if ($this->active_handler) {
+            return $this->active_handler->create_folder($folder_path, $parent_id);
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Get file URL
+     */
+    public function get_file_url($file_id) {
+        if ($this->active_handler) {
+            return $this->active_handler->get_file_url($file_id);
+        }
+        return '';
+    }
+    
+    /**
+     * Get file info
+     */
+    public function get_file_info($file_id) {
+        if ($this->active_handler) {
+            return $this->active_handler->get_file_info($file_id);
+        }
+        return null;
+    }
+    
+    /**
+     * Search files
+     */
+    public function search_files($query, $options = array()) {
+        if ($this->active_handler) {
+            return $this->active_handler->search_files($query, $options);
+        }
+        return array();
     }
     
     /**
      * Get storage type
-     * [METODO ESISTENTE - NON MODIFICATO]
      */
     public function get_storage_type() {
         return $this->storage_type;
     }
     
     /**
-     * Get active storage handler
-     * [METODO ESISTENTE - NON MODIFICATO]
+     * Set storage type
      */
-    public function get_active_storage() {
-        return $this->active_storage;
+    public function set_storage_type($type) {
+        if (in_array($type, array('googledrive', 'dropbox', 'both'))) {
+            $this->storage_type = $type;
+            update_option('disco747_storage_type', $type);
+            
+            // Re-inizializza
+            $this->initialize();
+            
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Get Google Drive handler
+     */
+    public function get_googledrive_handler() {
+        return $this->googledrive_handler;
+    }
+    
+    /**
+     * Get Dropbox handler
+     */
+    public function get_dropbox_handler() {
+        return $this->dropbox_handler;
+    }
+    
+    /**
+     * Get active handler
+     */
+    public function get_active_handler() {
+        return $this->active_handler;
+    }
+    
+    /**
+     * Test connection
+     */
+    public function test_connection() {
+        $results = array(
+            'success' => false,
+            'message' => '',
+            'details' => array()
+        );
+        
+        if ($this->storage_type === 'both') {
+            // Test entrambi
+            if ($this->googledrive_handler) {
+                $results['details']['googledrive'] = $this->test_handler($this->googledrive_handler, 'Google Drive');
+            }
+            if ($this->dropbox_handler) {
+                $results['details']['dropbox'] = $this->test_handler($this->dropbox_handler, 'Dropbox');
+            }
+            
+            // Se almeno uno funziona, consideriamo successo
+            $results['success'] = (!empty($results['details']['googledrive']['success']) || 
+                                  !empty($results['details']['dropbox']['success']));
+                                  
+            if ($results['success']) {
+                $results['message'] = 'Almeno un servizio di storage è connesso';
+            } else {
+                $results['message'] = 'Nessun servizio di storage disponibile';
+            }
+            
+        } else {
+            // Test singolo handler
+            if ($this->active_handler) {
+                $service_name = $this->storage_type === 'googledrive' ? 'Google Drive' : 'Dropbox';
+                $test = $this->test_handler($this->active_handler, $service_name);
+                $results = array_merge($results, $test);
+            } else {
+                $results['message'] = 'Nessun handler attivo';
+            }
+        }
+        
+        return $results;
+    }
+    
+    /**
+     * Test singolo handler
+     */
+    private function test_handler($handler, $service_name) {
+        $result = array(
+            'success' => false,
+            'message' => '',
+            'service' => $service_name
+        );
+        
+        try {
+            if (method_exists($handler, 'test_connection')) {
+                $test = $handler->test_connection();
+                $result['success'] = $test['success'] ?? false;
+                $result['message'] = $test['message'] ?? 'Test completato';
+            } else {
+                // Fallback: prova a listare i file nella root
+                $files = $handler->list_files('/');
+                $result['success'] = is_array($files);
+                $result['message'] = $result['success'] ? 
+                    "Connesso - {$service_name} funzionante" : 
+                    "Impossibile connettersi a {$service_name}";
+            }
+        } catch (\Exception $e) {
+            $result['message'] = "Errore {$service_name}: " . $e->getMessage();
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Get authentication URL for OAuth
+     */
+    public function get_auth_url($service = null) {
+        if (!$service) {
+            $service = $this->storage_type;
+        }
+        
+        switch ($service) {
+            case 'googledrive':
+                if ($this->googledrive_handler && method_exists($this->googledrive_handler, 'get_auth_url')) {
+                    return $this->googledrive_handler->get_auth_url();
+                }
+                break;
+                
+            case 'dropbox':
+                if ($this->dropbox_handler && method_exists($this->dropbox_handler, 'get_auth_url')) {
+                    return $this->dropbox_handler->get_auth_url();
+                }
+                break;
+        }
+        
+        return '';
+    }
+    
+    /**
+     * Handle OAuth callback
+     */
+    public function handle_callback($code, $service = null) {
+        if (!$service) {
+            $service = $this->storage_type;
+        }
+        
+        switch ($service) {
+            case 'googledrive':
+                if ($this->googledrive_handler && method_exists($this->googledrive_handler, 'handle_callback')) {
+                    return $this->googledrive_handler->handle_callback($code);
+                }
+                break;
+                
+            case 'dropbox':
+                if ($this->dropbox_handler && method_exists($this->dropbox_handler, 'handle_callback')) {
+                    return $this->dropbox_handler->handle_callback($code);
+                }
+                break;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Revoke access
+     */
+    public function revoke_access($service = null) {
+        if (!$service) {
+            $service = $this->storage_type;
+        }
+        
+        $results = array();
+        
+        if ($service === 'both' || $service === 'googledrive') {
+            if ($this->googledrive_handler && method_exists($this->googledrive_handler, 'revoke_access')) {
+                $results['googledrive'] = $this->googledrive_handler->revoke_access();
+            }
+        }
+        
+        if ($service === 'both' || $service === 'dropbox') {
+            if ($this->dropbox_handler && method_exists($this->dropbox_handler, 'revoke_access')) {
+                $results['dropbox'] = $this->dropbox_handler->revoke_access();
+            }
+        }
+        
+        return count($results) === 1 ? array_values($results)[0] : $results;
+    }
+    
+    /**
+     * Get quota/usage info
+     */
+    public function get_quota_info() {
+        if ($this->active_handler && method_exists($this->active_handler, 'get_quota_info')) {
+            return $this->active_handler->get_quota_info();
+        }
+        
+        return array(
+            'used' => 0,
+            'allocated' => 0,
+            'percent' => 0
+        );
     }
 }
