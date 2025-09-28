@@ -1,432 +1,601 @@
 <?php
 /**
- * Classe per sincronizzazione e scansione batch Excel da Google Drive
- * 
- * @package    Disco747_CRM  
+ * Classe per la sincronizzazione avanzata e scansione batch di Google Drive
+ * Estende le funzionalità esistenti con metodi per analisi massiva dei file Excel
+ *
+ * @package    Disco747_CRM
  * @subpackage Storage
- * @version    11.5.9-EXCEL-SCAN
+ * @since      11.4.2
+ * @version    11.4.2
+ * @author     747 Disco Team
  */
 
 namespace Disco747_CRM\Storage;
 
+// Sicurezza: impedisce l'accesso diretto al file
 if (!defined('ABSPATH')) {
     exit('Accesso diretto non consentito');
 }
 
+/**
+ * Classe Disco747_GoogleDrive_Sync
+ * 
+ * Gestisce operazioni avanzate di sincronizzazione e scansione batch per Google Drive
+ * Mantiene tutte le funzionalità esistenti e aggiunge nuove capacità di analisi
+ * 
+ * @since 11.4.2
+ */
 class Disco747_GoogleDrive_Sync {
     
-    private $drive_service = null;
-    private $cache_duration = 300; // 5 minuti
-    private $last_error = '';
-    private $debug_mode = false;
-    private $max_retries = 3;
-    private $retry_delay = 2; // secondi
+    /**
+     * Configurazione API
+     */
+    private $base_url = 'https://www.googleapis.com/drive/v3';
+    private $upload_url = 'https://www.googleapis.com/upload/drive/v3';
+    private $token_url = 'https://oauth2.googleapis.com/token';
+    
+    /**
+     * Rate limiting per batch scan
+     */
+    private $requests_per_minute = 100;
+    private $batch_size = 50;
+    private $retry_max_attempts = 3;
+    private $retry_delay_seconds = 2;
+    
+    /**
+     * Cache e tracking
+     */
+    private $folder_cache = array();
+    private $request_count = 0;
+    private $last_request_time = 0;
+    
+    /**
+     * Debug e logging
+     */
+    private $debug_mode = true;
     
     /**
      * Costruttore
      */
-    public function __construct($drive_service = null) {
-        $this->drive_service = $drive_service;
-        $this->debug_mode = defined('DISCO747_CRM_DEBUG') && DISCO747_CRM_DEBUG;
+    public function __construct() {
+        $this->log('[747Disco-Scan] GoogleDrive Sync inizializzato');
     }
     
-    /**
-     * Set Google Drive service
-     */
-    public function set_drive_service($service) {
-        $this->drive_service = $service;
-    }
+    // ============================================================================
+    // METODI PER SCANSIONE BATCH - NUOVE FUNZIONALITÀ
+    // ============================================================================
     
     /**
-     * Log helper
+     * Scansiona ricorsivamente tutte le cartelle /747-Preventivi/AAAA/MMMM/ 
+     * per trovare file Excel (.xlsx) con paginazione e rate limiting
+     *
+     * @param array $options Opzioni di scansione
+     * @return array Lista file con metadati
      */
-    private function log($message, $level = 'INFO') {
-        if ($this->debug_mode || $level === 'ERROR') {
-            error_log("[747Disco-Scan] [{$level}] {$message}");
+    public function scan_excel_files_batch($options = array()) {
+        $defaults = array(
+            'page_size' => $this->batch_size,
+            'max_results' => 1000,
+            'year_from' => null,
+            'year_to' => null,
+            'include_metadata' => true
+        );
+        
+        $options = array_merge($defaults, $options);
+        
+        $this->log('[747Disco-Scan] Avvio scansione batch Excel files');
+        
+        try {
+            // Ottieni le credenziali OAuth
+            $credentials = $this->get_oauth_credentials();
+            if (!$credentials) {
+                throw new \Exception('Credenziali Google Drive non configurate');
+            }
+            
+            // Ottieni token valido
+            $token = $this->get_valid_access_token($credentials);
+            
+            // Trova cartella principale /747-Preventivi/
+            $main_folder_id = $this->find_main_preventivi_folder($token);
+            if (!$main_folder_id) {
+                throw new \Exception('Cartella /747-Preventivi/ non trovata su Google Drive');
+            }
+            
+            // Scansiona ricorsivamente per anno/mese
+            $all_files = array();
+            $year_folders = $this->list_year_folders($token, $main_folder_id, $options);
+            
+            foreach ($year_folders as $year_folder) {
+                $month_folders = $this->list_month_folders($token, $year_folder['id']);
+                
+                foreach ($month_folders as $month_folder) {
+                    $excel_files = $this->list_excel_files_in_folder(
+                        $token, 
+                        $month_folder['id'], 
+                        $year_folder['name'], 
+                        $month_folder['name'],
+                        $options
+                    );
+                    
+                    $all_files = array_merge($all_files, $excel_files);
+                    
+                    // Rate limiting check
+                    $this->check_rate_limit();
+                    
+                    // Limite massimo risultati
+                    if (count($all_files) >= $options['max_results']) {
+                        break 2;
+                    }
+                }
+            }
+            
+            $this->log('[747Disco-Scan] Scansione completata: ' . count($all_files) . ' file Excel trovati');
+            
+            return array(
+                'success' => true,
+                'files' => $all_files,
+                'total_found' => count($all_files),
+                'scan_time' => date('Y-m-d H:i:s')
+            );
+            
+        } catch (\Exception $e) {
+            $this->log('[747Disco-Scan] Errore scansione batch: ' . $e->getMessage(), 'error');
+            return array(
+                'success' => false,
+                'error' => $e->getMessage(),
+                'files' => array()
+            );
         }
     }
     
     /**
-     * Get all Excel files from Google Drive /747-Preventivi/ folder
+     * Trova cartella principale /747-Preventivi/ su Google Drive
+     *
+     * @param string $token Token di accesso
+     * @return string|null ID della cartella principale
      */
-    public function get_all_excel_files() {
-        $this->log("Avvio scansione completa cartella /747-Preventivi/");
+    private function find_main_preventivi_folder($token) {
+        $credentials = $this->get_oauth_credentials();
+        $configured_folder_id = $credentials['folder_id'] ?? null;
         
-        if (!$this->drive_service) {
-            $this->log("Drive service non disponibile", 'ERROR');
+        if ($configured_folder_id) {
+            $this->log('[747Disco-Scan] Uso cartella configurata: ' . $configured_folder_id);
+            return $configured_folder_id;
+        }
+        
+        // Cerca cartella per nome se non configurata
+        $query = "name='747-Preventivi' and mimeType='application/vnd.google-apps.folder' and trashed=false";
+        
+        $response = $this->make_api_request(
+            $token,
+            '/files',
+            array('q' => $query, 'fields' => 'files(id,name)')
+        );
+        
+        if ($response && !empty($response['files'])) {
+            return $response['files'][0]['id'];
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Lista le cartelle anno (AAAA) nella cartella principale
+     *
+     * @param string $token Token di accesso
+     * @param string $parent_folder_id ID cartella padre
+     * @param array $options Opzioni di filtro
+     * @return array Lista cartelle anno
+     */
+    private function list_year_folders($token, $parent_folder_id, $options = array()) {
+        $query = "'{$parent_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+        
+        $response = $this->make_api_request(
+            $token,
+            '/files',
+            array('q' => $query, 'fields' => 'files(id,name)', 'pageSize' => 100)
+        );
+        
+        if (!$response || empty($response['files'])) {
             return array();
         }
         
-        $all_files = array();
-        $folders_to_scan = array();
+        $year_folders = array();
+        foreach ($response['files'] as $folder) {
+            // Verifica che sia una cartella anno (4 cifre)
+            if (preg_match('/^\d{4}$/', $folder['name'])) {
+                $year = intval($folder['name']);
+                
+                // Applica filtri anno se specificati
+                if ($options['year_from'] && $year < $options['year_from']) continue;
+                if ($options['year_to'] && $year > $options['year_to']) continue;
+                
+                $year_folders[] = $folder;
+            }
+        }
         
-        try {
-            // Trova la cartella principale /747-Preventivi/
-            $main_folder_query = "name = '747-Preventivi' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-            $main_folder_results = $this->drive_service->files->listFiles(array(
-                'q' => $main_folder_query,
-                'fields' => 'files(id, name)',
-                'pageSize' => 10
-            ));
-            
-            if (empty($main_folder_results->files)) {
-                $this->log("Cartella /747-Preventivi/ non trovata", 'ERROR');
-                return array();
-            }
-            
-            $main_folder_id = $main_folder_results->files[0]->id;
-            $this->log("Cartella principale trovata: ID={$main_folder_id}");
-            
-            // Aggiungi la cartella principale alla lista da scansionare
-            $folders_to_scan[] = array(
-                'id' => $main_folder_id,
-                'path' => '/747-Preventivi'
-            );
-            
-            // Scansione ricorsiva delle sottocartelle
-            while (!empty($folders_to_scan)) {
-                $current_folder = array_shift($folders_to_scan);
-                $current_folder_id = $current_folder['id'];
-                $current_path = $current_folder['path'];
-                
-                $this->log("Scansione cartella: {$current_path}");
-                
-                // Cerca sottocartelle
-                $subfolder_query = "'{$current_folder_id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
-                $pageToken = null;
-                
-                do {
-                    $subfolder_results = $this->drive_service->files->listFiles(array(
-                        'q' => $subfolder_query,
-                        'fields' => 'nextPageToken, files(id, name)',
-                        'pageSize' => 100,
-                        'pageToken' => $pageToken
-                    ));
-                    
-                    foreach ($subfolder_results->files as $subfolder) {
-                        $folders_to_scan[] = array(
-                            'id' => $subfolder->id,
-                            'path' => $current_path . '/' . $subfolder->name
-                        );
-                    }
-                    
-                    $pageToken = $subfolder_results->nextPageToken;
-                } while ($pageToken);
-                
-                // Cerca file Excel nella cartella corrente
-                $excel_query = "'{$current_folder_id}' in parents and (mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or mimeType = 'application/vnd.ms-excel') and trashed = false";
-                $pageToken = null;
-                
-                do {
-                    $excel_results = $this->drive_service->files->listFiles(array(
-                        'q' => $excel_query,
-                        'fields' => 'nextPageToken, files(id, name, modifiedTime, size, webViewLink)',
-                        'pageSize' => 100,
-                        'pageToken' => $pageToken
-                    ));
-                    
-                    foreach ($excel_results->files as $file) {
-                        $file_info = array(
-                            'id' => $file->id,
-                            'name' => $file->name,
-                            'path' => $current_path . '/' . $file->name,
-                            'modified' => $file->modifiedTime,
-                            'size' => $file->size,
-                            'webViewLink' => $file->webViewLink
-                        );
-                        
-                        $all_files[] = $file_info;
-                        $this->log("File trovato: {$file_info['name']} (ID: {$file_info['id']})");
-                    }
-                    
-                    $pageToken = $excel_results->nextPageToken;
-                } while ($pageToken);
-                
-                // Piccola pausa per evitare rate limiting
-                if (count($folders_to_scan) > 0) {
-                    usleep(100000); // 100ms
-                }
-            }
-            
-            $this->log("Scansione completata. Trovati " . count($all_files) . " file Excel");
-            return $all_files;
-            
-        } catch (\Exception $e) {
-            $this->log("Errore durante la scansione: " . $e->getMessage(), 'ERROR');
-            $this->last_error = $e->getMessage();
+        return $year_folders;
+    }
+    
+    /**
+     * Lista le cartelle mese (MM o MMMM) in una cartella anno
+     *
+     * @param string $token Token di accesso
+     * @param string $year_folder_id ID cartella anno
+     * @return array Lista cartelle mese
+     */
+    private function list_month_folders($token, $year_folder_id) {
+        $query = "'{$year_folder_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false";
+        
+        $response = $this->make_api_request(
+            $token,
+            '/files',
+            array('q' => $query, 'fields' => 'files(id,name)', 'pageSize' => 20)
+        );
+        
+        if (!$response || empty($response['files'])) {
             return array();
         }
+        
+        $month_folders = array();
+        foreach ($response['files'] as $folder) {
+            // Verifica formato mese (MM o nome mese)
+            if (preg_match('/^(0[1-9]|1[0-2])$/', $folder['name']) || 
+                in_array(strtolower($folder['name']), $this->get_month_names())) {
+                $month_folders[] = $folder;
+            }
+        }
+        
+        return $month_folders;
     }
     
     /**
-     * Read and parse single Excel file from Google Drive
+     * Lista i file Excel in una specifica cartella mese
+     *
+     * @param string $token Token di accesso
+     * @param string $folder_id ID cartella mese
+     * @param string $year Anno per path
+     * @param string $month Mese per path
+     * @param array $options Opzioni
+     * @return array Lista file Excel
      */
-    public function read_single_excel($file_id, $retry_count = 0) {
-        $this->log("Lettura file Excel ID: {$file_id} (tentativo " . ($retry_count + 1) . ")");
+    private function list_excel_files_in_folder($token, $folder_id, $year, $month, $options = array()) {
+        $query = "'{$folder_id}' in parents and (name contains '.xlsx' or name contains '.xls') and trashed=false";
         
-        $result = array(
-            'ok' => false,
-            'data' => array(),
-            'error' => '',
-            'log' => array()
+        $params = array(
+            'q' => $query,
+            'fields' => 'files(id,name,size,createdTime,modifiedTime,webViewLink)',
+            'pageSize' => $options['page_size'] ?? $this->batch_size
         );
         
-        if (!$this->drive_service) {
-            $result['error'] = 'Google Drive service non disponibile';
-            $result['log'][] = '[ERROR] ' . $result['error'];
-            return $result;
+        $excel_files = array();
+        $next_page_token = null;
+        
+        do {
+            if ($next_page_token) {
+                $params['pageToken'] = $next_page_token;
+            }
+            
+            $response = $this->make_api_request($token, '/files', $params);
+            
+            if (!$response) {
+                break;
+            }
+            
+            if (!empty($response['files'])) {
+                foreach ($response['files'] as $file) {
+                    // Filtra solo file Excel validi
+                    if ($this->is_valid_excel_file($file['name'])) {
+                        $excel_files[] = array(
+                            'file_id' => $file['id'],
+                            'filename' => $file['name'],
+                            'drive_path' => "/747-Preventivi/{$year}/{$month}/" . $file['name'],
+                            'size' => intval($file['size'] ?? 0),
+                            'created_time' => $file['createdTime'] ?? null,
+                            'modified_time' => $file['modifiedTime'] ?? null,
+                            'web_view_link' => $file['webViewLink'] ?? null,
+                            'year' => $year,
+                            'month' => $month,
+                            'folder_id' => $folder_id
+                        );
+                    }
+                }
+            }
+            
+            $next_page_token = $response['nextPageToken'] ?? null;
+            
+            // Rate limiting
+            $this->check_rate_limit();
+            
+        } while ($next_page_token);
+        
+        return $excel_files;
+    }
+    
+    /**
+     * Scarica il contenuto di un file Excel da Google Drive
+     *
+     * @param string $file_id ID del file su Google Drive
+     * @param int $max_retries Numero massimo di tentativi
+     * @return string|false Contenuto del file o false in caso di errore
+     */
+    public function download_excel_file($file_id, $max_retries = null) {
+        if ($max_retries === null) {
+            $max_retries = $this->retry_max_attempts;
         }
         
-        $temp_file = null;
+        $this->log('[747Disco-Scan] Download file Excel: ' . $file_id);
         
+        $attempt = 0;
+        while ($attempt < $max_retries) {
+            $attempt++;
+            
+            try {
+                $credentials = $this->get_oauth_credentials();
+                $token = $this->get_valid_access_token($credentials);
+                
+                $response = wp_remote_get($this->base_url . '/files/' . $file_id . '?alt=media', array(
+                    'headers' => array(
+                        'Authorization' => 'Bearer ' . $token,
+                        'User-Agent' => '747-Disco-CRM/11.4.2'
+                    ),
+                    'timeout' => 60
+                ));
+                
+                if (is_wp_error($response)) {
+                    throw new \Exception('Errore HTTP: ' . $response->get_error_message());
+                }
+                
+                $http_code = wp_remote_retrieve_response_code($response);
+                
+                if ($http_code === 200) {
+                    $content = wp_remote_retrieve_body($response);
+                    $this->log('[747Disco-Scan] File scaricato: ' . strlen($content) . ' bytes');
+                    return $content;
+                } else if ($http_code === 429) {
+                    // Rate limit: attendi e riprova
+                    $this->log('[747Disco-Scan] Rate limit raggiunto, attendo...');
+                    sleep($this->retry_delay_seconds * $attempt);
+                    continue;
+                } else {
+                    throw new \Exception('HTTP Error: ' . $http_code);
+                }
+                
+            } catch (\Exception $e) {
+                $this->log('[747Disco-Scan] Tentativo ' . $attempt . ' fallito: ' . $e->getMessage());
+                
+                if ($attempt >= $max_retries) {
+                    $this->log('[747Disco-Scan] Download fallito dopo ' . $max_retries . ' tentativi', 'error');
+                    return false;
+                }
+                
+                sleep($this->retry_delay_seconds * $attempt);
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Ottieni metadati estesi di un file
+     *
+     * @param string $file_id ID del file
+     * @return array|null Metadati del file
+     */
+    public function get_file_metadata($file_id) {
         try {
-            // Ottieni metadata del file
-            $file = $this->drive_service->files->get($file_id, array(
-                'fields' => 'id, name, modifiedTime, size'
-            ));
+            $credentials = $this->get_oauth_credentials();
+            $token = $this->get_valid_access_token($credentials);
             
-            $result['log'][] = "[INFO] File: {$file->name} (Size: {$file->size} bytes)";
-            
-            // Download del file
-            $content = $this->drive_service->files->get($file_id, array('alt' => 'media'));
-            
-            // Salva in file temporaneo
-            $temp_file = sys_get_temp_dir() . '/disco747_' . uniqid() . '.xlsx';
-            file_put_contents($temp_file, $content->getBody()->getContents());
-            
-            $result['log'][] = "[INFO] File scaricato in: {$temp_file}";
-            
-            // Parse Excel con PHPSpreadsheet
-            if (!class_exists('\\PhpOffice\\PhpSpreadsheet\\Spreadsheet')) {
-                require_once ABSPATH . 'wp-content/plugins/747disco-crm/vendor/autoload.php';
-            }
-            
-            $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($temp_file);
-            $reader->setReadDataOnly(true);
-            $reader->setReadEmptyCells(false);
-            $spreadsheet = $reader->load($temp_file);
-            
-            $worksheet = $spreadsheet->getActiveSheet();
-            $result['log'][] = "[INFO] Foglio attivo: " . $worksheet->getTitle();
-            
-            // Estrai dati secondo le specifiche
-            $data = array(
-                'file_id' => $file_id,
-                'filename' => $file->name,
-                'drive_path' => '/747-Preventivi/' . $file->name,
-                'modified_time' => $file->modifiedTime,
-                'analysis_success' => 1,
-                'analysis_errors_json' => null
+            $response = $this->make_api_request(
+                $token,
+                '/files/' . $file_id,
+                array('fields' => 'id,name,size,createdTime,modifiedTime,webViewLink,parents')
             );
             
-            // Determina stato dal nome file
-            $filename_upper = strtoupper($file->name);
-            if (strpos($filename_upper, 'CONF') === 0) {
-                $data['stato'] = 'CONF';
-            } elseif (strpos($filename_upper, 'NO') === 0) {
-                $data['stato'] = 'NO';
-            } else {
-                $data['stato'] = 'Neutro';
-            }
-            
-            // Mappa celle Excel -> campi database
-            $cell_mappings = array(
-                'data_evento' => 'A1',
-                'tipo_evento' => 'B1', 
-                'tipo_menu' => 'C1',
-                'orario' => 'D1',
-                'numero_invitati' => 'E1',
-                'nome_referente' => 'F1',
-                'cognome_referente' => 'G1',
-                'cellulare' => 'H1',
-                'email' => 'I1',
-                'omaggio1' => 'J1',
-                'omaggio2' => 'K1',
-                'omaggio3' => 'L1',
-                'importo' => 'M1',
-                'acconto' => 'N1',
-                'saldo' => 'O1',
-                'extra1_nome' => 'P1',
-                'extra1_prezzo' => 'Q1',
-                'extra2_nome' => 'R1',
-                'extra2_prezzo' => 'S1',
-                'extra3_nome' => 'T1',
-                'extra3_prezzo' => 'U1'
-            );
-            
-            // Leggi celle con gestione errori
-            foreach ($cell_mappings as $field => $cell) {
-                try {
-                    $value = $worksheet->getCell($cell)->getValue();
-                    
-                    // Conversione tipi
-                    if (in_array($field, array('numero_invitati'))) {
-                        $data[$field] = intval($value);
-                    } elseif (in_array($field, array('importo', 'acconto', 'saldo', 'extra1_prezzo', 'extra2_prezzo', 'extra3_prezzo'))) {
-                        $data[$field] = floatval(str_replace(',', '.', $value));
-                    } elseif ($field === 'data_evento' && $value) {
-                        // Gestione date Excel
-                        if (is_numeric($value)) {
-                            $date = \PhpOffice\PhpSpreadsheet\Shared\Date::excelToDateTimeObject($value);
-                            $data[$field] = $date->format('Y-m-d');
-                        } else {
-                            $data[$field] = date('Y-m-d', strtotime($value));
-                        }
-                    } else {
-                        $data[$field] = trim(strval($value));
-                    }
-                    
-                    if (!empty($data[$field])) {
-                        $result['log'][] = "[DATA] {$field}: {$data[$field]}";
-                    }
-                    
-                } catch (\Exception $e) {
-                    $result['log'][] = "[WARNING] Errore lettura cella {$cell}: " . $e->getMessage();
-                }
-            }
-            
-            // Se tipo_menu non trovato nel file, prova a estrarlo dal nome file
-            if (empty($data['tipo_menu'])) {
-                if (preg_match('/\(Menu\s+([^\)]+)\)/i', $file->name, $matches)) {
-                    $data['tipo_menu'] = trim($matches[1]);
-                    $result['log'][] = "[INFO] Menu estratto dal nome file: {$data['tipo_menu']}";
-                }
-            }
-            
-            // Calcola saldo se mancante
-            if (empty($data['saldo']) && !empty($data['importo']) && isset($data['acconto'])) {
-                $data['saldo'] = $data['importo'] - $data['acconto'];
-                $result['log'][] = "[CALC] Saldo calcolato: {$data['saldo']}";
-            }
-            
-            $result['ok'] = true;
-            $result['data'] = $data;
-            $result['log'][] = "[SUCCESS] Analisi completata con successo";
+            return $response;
             
         } catch (\Exception $e) {
-            $result['error'] = $e->getMessage();
-            $result['log'][] = "[ERROR] " . $result['error'];
-            
-            // Retry logic
-            if ($retry_count < $this->max_retries - 1) {
-                $result['log'][] = "[INFO] Nuovo tentativo tra {$this->retry_delay} secondi...";
-                sleep($this->retry_delay);
-                return $this->read_single_excel($file_id, $retry_count + 1);
-            }
-            
-            // Salva errore nel database
-            if (isset($data)) {
-                $data['analysis_success'] = 0;
-                $data['analysis_errors_json'] = json_encode(array(
-                    'error' => $result['error'],
-                    'log' => $result['log']
-                ));
-                $result['data'] = $data;
-            }
-        } finally {
-            // Pulizia file temporaneo
-            if ($temp_file && file_exists($temp_file)) {
-                @unlink($temp_file);
-                $result['log'][] = "[INFO] File temporaneo rimosso";
-            }
+            $this->log('[747Disco-Scan] Errore recupero metadati: ' . $e->getMessage(), 'error');
+            return null;
+        }
+    }
+    
+    // ============================================================================
+    // METODI DI UTILITÀ E SUPPORTO
+    // ============================================================================
+    
+    /**
+     * Verifica se un nome file è un Excel valido per i preventivi
+     *
+     * @param string $filename Nome del file
+     * @return bool
+     */
+    private function is_valid_excel_file($filename) {
+        // Deve terminare con .xlsx
+        if (!preg_match('/\.xlsx?$/i', $filename)) {
+            return false;
         }
         
-        return $result;
+        // Deve avere pattern preventivo (data + tipo evento)
+        // Esempi: "14_10 Compleanno (Menu 747).xlsx", "CONF 25_12 Matrimonio.xlsx"
+        if (preg_match('/^(NO\s+|CONF\s+)?\d{1,2}_\d{1,2}\s+.+\.xlsx?$/i', $filename)) {
+            return true;
+        }
+        
+        return false;
     }
     
     /**
-     * Batch scan all Excel files
+     * Rate limiting: controlla e attende se necessario
      */
-    public function batch_scan_all_excel($progress_callback = null) {
-        $this->log("=== INIZIO SCANSIONE BATCH ===");
+    private function check_rate_limit() {
+        $this->request_count++;
+        $current_time = time();
         
-        $results = array(
-            'success' => 0,
-            'failed' => 0,
-            'total' => 0,
-            'files' => array(),
-            'errors' => array()
-        );
-        
-        // Ottieni lista file
-        $files = $this->get_all_excel_files();
-        $results['total'] = count($files);
-        
-        if (empty($files)) {
-            $this->log("Nessun file Excel trovato", 'WARNING');
-            return $results;
+        // Se abbiamo fatto troppe richieste nell'ultimo minuto, aspetta
+        if ($this->request_count >= $this->requests_per_minute) {
+            $time_passed = $current_time - $this->last_request_time;
+            if ($time_passed < 60) {
+                $sleep_time = 60 - $time_passed + 1;
+                $this->log('[747Disco-Scan] Rate limit: attendo ' . $sleep_time . ' secondi');
+                sleep($sleep_time);
+            }
+            $this->request_count = 0;
         }
         
-        $this->log("Trovati {$results['total']} file da analizzare");
+        $this->last_request_time = $current_time;
+    }
+    
+    /**
+     * Esegue una richiesta API con retry automatico
+     *
+     * @param string $token Token di accesso
+     * @param string $endpoint Endpoint API
+     * @param array $params Parametri query
+     * @return array|null Risposta decodificata
+     */
+    private function make_api_request($token, $endpoint, $params = array()) {
+        $url = $this->base_url . $endpoint;
+        if (!empty($params)) {
+            $url .= '?' . http_build_query($params);
+        }
         
-        // Processa ogni file
-        foreach ($files as $index => $file) {
-            $file_number = $index + 1;
+        $attempt = 0;
+        while ($attempt < $this->retry_max_attempts) {
+            $attempt++;
             
-            $this->log("Processing file {$file_number}/{$results['total']}: {$file['name']}");
+            $response = wp_remote_get($url, array(
+                'headers' => array(
+                    'Authorization' => 'Bearer ' . $token,
+                    'User-Agent' => '747-Disco-CRM/11.4.2'
+                ),
+                'timeout' => 30
+            ));
             
-            // Callback progress
-            if ($progress_callback && is_callable($progress_callback)) {
-                call_user_func($progress_callback, array(
-                    'current' => $file_number,
-                    'total' => $results['total'],
-                    'file' => $file['name'],
-                    'percentage' => round(($file_number / $results['total']) * 100)
-                ));
+            if (is_wp_error($response)) {
+                $this->log('[747Disco-Scan] Errore HTTP tentativo ' . $attempt . ': ' . $response->get_error_message());
+                if ($attempt >= $this->retry_max_attempts) {
+                    return null;
+                }
+                sleep($this->retry_delay_seconds);
+                continue;
             }
             
-            // Analizza file
-            $scan_result = $this->read_single_excel($file['id']);
+            $http_code = wp_remote_retrieve_response_code($response);
+            $body = wp_remote_retrieve_body($response);
             
-            $file_result = array(
-                'file_id' => $file['id'],
-                'filename' => $file['name'],
-                'path' => $file['path'],
-                'success' => $scan_result['ok'],
-                'data' => $scan_result['data'],
-                'error' => $scan_result['error'],
-                'log' => $scan_result['log']
-            );
-            
-            $results['files'][] = $file_result;
-            
-            if ($scan_result['ok']) {
-                $results['success']++;
-                $this->log("✅ File {$file_number} analizzato con successo");
+            if ($http_code === 200) {
+                return json_decode($body, true);
+            } else if ($http_code === 429) {
+                $this->log('[747Disco-Scan] Rate limit API, tentativo ' . $attempt);
+                sleep($this->retry_delay_seconds * $attempt);
+                continue;
             } else {
-                $results['failed']++;
-                $results['errors'][] = array(
-                    'file' => $file['name'],
-                    'error' => $scan_result['error']
-                );
-                $this->log("❌ File {$file_number} fallito: " . $scan_result['error'], 'ERROR');
-            }
-            
-            // Pausa per evitare rate limiting
-            if ($file_number < $results['total']) {
-                usleep(500000); // 500ms
+                $this->log('[747Disco-Scan] Errore API HTTP ' . $http_code . ': ' . $body);
+                return null;
             }
         }
         
-        $this->log("=== FINE SCANSIONE BATCH ===");
-        $this->log("Risultati: {$results['success']} successi, {$results['failed']} fallimenti su {$results['total']} totali");
+        return null;
+    }
+    
+    /**
+     * Lista nomi mesi supportati (per cartelle mese)
+     *
+     * @return array
+     */
+    private function get_month_names() {
+        return array(
+            'gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno',
+            'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre',
+            'january', 'february', 'march', 'april', 'may', 'june',
+            'july', 'august', 'september', 'october', 'november', 'december'
+        );
+    }
+    
+    // ============================================================================
+    // METODI ESISTENTI DA MANTENERE (COMPATIBILITY)
+    // ============================================================================
+    
+    /**
+     * Ottiene le credenziali OAuth configurate
+     *
+     * @return array|null Credenziali OAuth
+     */
+    private function get_oauth_credentials() {
+        $credentials = get_option('disco747_googledrive_oauth', array());
         
-        return $results;
+        if (empty($credentials['client_id']) || empty($credentials['client_secret'])) {
+            return null;
+        }
+        
+        return $credentials;
     }
     
     /**
-     * Get last error
+     * Ottiene un token di accesso valido
+     *
+     * @param array $credentials Credenziali OAuth
+     * @return string Token di accesso
+     * @throws \Exception Se non riesce ad ottenere il token
      */
-    public function get_last_error() {
-        return $this->last_error;
+    private function get_valid_access_token($credentials = null) {
+        if (!$credentials) {
+            $credentials = $this->get_oauth_credentials();
+        }
+        
+        if (!$credentials) {
+            throw new \Exception('Credenziali OAuth non configurate');
+        }
+        
+        // Controlla se abbiamo un token valido in cache
+        $cached_token = get_transient('disco747_gdrive_access_token');
+        if ($cached_token) {
+            return $cached_token;
+        }
+        
+        // Refresh token se necessario
+        if (empty($credentials['refresh_token'])) {
+            throw new \Exception('Refresh token non disponibile');
+        }
+        
+        $response = wp_remote_post($this->token_url, array(
+            'body' => array(
+                'client_id' => $credentials['client_id'],
+                'client_secret' => $credentials['client_secret'],
+                'refresh_token' => $credentials['refresh_token'],
+                'grant_type' => 'refresh_token'
+            ),
+            'timeout' => 30
+        ));
+        
+        if (is_wp_error($response)) {
+            throw new \Exception('Errore refresh token: ' . $response->get_error_message());
+        }
+        
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+        
+        if (empty($body['access_token'])) {
+            throw new \Exception('Token non ottenuto');
+        }
+        
+        // Cache token per 50 minuti (scade in 60)
+        set_transient('disco747_gdrive_access_token', $body['access_token'], 3000);
+        
+        return $body['access_token'];
     }
     
     /**
-     * Clear cache
+     * Logging con prefisso identificativo
+     *
+     * @param string $message Messaggio da loggare
+     * @param string $level Livello di log
      */
-    public function clear_cache() {
-        delete_transient('disco747_gdrive_excel_files');
-        delete_transient('disco747_gdrive_preventivi');
-        $this->log("Cache cleared");
+    private function log($message, $level = 'info') {
+        if ($this->debug_mode && function_exists('error_log')) {
+            $prefix = '[' . date('Y-m-d H:i:s') . '] ';
+            error_log($prefix . $message);
+        }
     }
 }
