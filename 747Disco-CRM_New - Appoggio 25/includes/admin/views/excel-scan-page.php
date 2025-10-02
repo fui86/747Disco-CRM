@@ -1,489 +1,545 @@
 <?php
 /**
- * Template per la pagina Scansione Excel Auto di 747 Disco CRM
- * Analisi batch file Excel da Google Drive con tabella e azioni
+ * Pagina Scansione Excel da Google Drive
+ * VERSIONE 12.0.0-PROGRESS-TABLE - Con barra avanzamento e tabella dati
  * 
- * @package    Disco747_CRM
- * @subpackage Admin/Views
- * @since      11.4.2
- * @version    11.4.2
- * @author     747 Disco Team
+ * @package Disco747_CRM
+ * @since 12.0.0
  */
 
-// Sicurezza: impedisce l'accesso diretto
 if (!defined('ABSPATH')) {
-    exit;
-}
-
-// Verifica permessi
-if (!current_user_can('manage_options')) {
-    wp_die('Non hai i permessi per accedere a questa pagina.');
+    exit('Accesso diretto non consentito');
 }
 
 // Ottieni istanza database per statistiche
-$database = null;
+$disco747_crm = disco747_crm();
+$database = $disco747_crm ? $disco747_crm->get_database() : null;
+
+// Statistiche rapide
 $stats = array(
-    'total_files' => 0,
-    'analyzed_success' => 0,
-    'analysis_errors' => 0,
-    'confirmed_count' => 0,
-    'last_scan' => 'Mai'
+    'total' => 0,
+    'confermati' => 0,
+    'attivi' => 0,
+    'annullati' => 0
 );
 
-try {
-    $disco747_crm = disco747_crm();
-    if ($disco747_crm && $disco747_crm->is_initialized()) {
-        $database = $disco747_crm->get_database();
-        
-        // Carica statistiche dal database se disponibile
-        if ($database && method_exists($database, 'count_excel_analysis')) {
-            $stats['total_files'] = $database->count_excel_analysis();
-            $stats['analyzed_success'] = $database->count_excel_analysis(array('analysis_success' => 1));
-            $stats['analysis_errors'] = $database->count_excel_analysis(array('analysis_success' => 0));
-            
-            // Conta confermati (con acconto > 0)
-            global $wpdb;
-            $excel_table = $wpdb->prefix . 'disco747_excel_analysis';
-            $stats['confirmed_count'] = intval($wpdb->get_var(
-                "SELECT COUNT(*) FROM {$excel_table} WHERE acconto > 0"
-            ));
-            
-            // Ultima scansione
-            $last_record = $wpdb->get_var(
-                "SELECT MAX(created_at) FROM {$excel_table}"
-            );
-            if ($last_record) {
-                $stats['last_scan'] = date('d/m/Y H:i', strtotime($last_record));
-            }
-        }
-    }
-} catch (Exception $e) {
-    error_log('[747Disco-ExcelPage] Errore caricamento stats: ' . $e->getMessage());
+if ($database) {
+    $stats = $database->get_stats();
 }
-
-// Configurazione storage
-$storage_type = get_option('disco747_storage_type', 'googledrive');
-$storage_configured = false;
-
-if ($storage_type === 'googledrive') {
-    // Prova prima il nuovo sistema unificato
-    $gd_credentials = get_option('disco747_gd_credentials', array());
-    if (!empty($gd_credentials['refresh_token'])) {
-        $storage_configured = true;
-    } else {
-        // Fallback al sistema separato
-        $client_id = get_option('disco747_googledrive_client_id');
-        $client_secret = get_option('disco747_googledrive_client_secret');
-        $refresh_token = get_option('disco747_googledrive_refresh_token');
-        $storage_configured = !empty($client_id) && !empty($client_secret) && !empty($refresh_token);
-    }
-} else {
-    $dropbox_credentials = get_option('disco747_dropbox_credentials', array());
-    $storage_configured = !empty($dropbox_credentials['refresh_token']);
-}
-
 ?>
 
-<div class="wrap disco747-excel-scan-page" style="background: #f8f9fa; margin: 0 -20px; padding: 20px;">
+<div class="wrap disco747-scan-excel-page">
+    <h1>
+        <span class="dashicons dashicons-cloud" style="font-size: 32px; width: 32px; height: 32px;"></span>
+        Sincronizzazione Google Drive
+    </h1>
 
-```
-<!-- Header 747 Disco Style -->
-<div style="background: linear-gradient(135deg, #2b1e1a 0%, #3c3c3c 100%); color: white; padding: 30px; border-radius: 15px; margin-bottom: 30px; box-shadow: 0 8px 25px rgba(0,0,0,0.3);">
-    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-        <div>
-            <h1 style="margin: 0; font-size: 2.2rem; color: #c28a4d; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">
-                📊 Excel Auto Scan
-            </h1>
-            <p style="margin: 10px 0 0 0; color: #eeeae6; font-size: 1.1rem;">
-                Analisi automatica file Excel da <?php echo $storage_type === 'googledrive' ? 'Google Drive' : 'Dropbox'; ?>
-            </p>
+    <div class="disco747-scan-container">
+        
+        <!-- Statistiche rapide -->
+        <div class="disco747-stats-grid" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 30px;">
+            <div class="disco747-stat-card" style="background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Totale Preventivi</div>
+                <div style="font-size: 32px; font-weight: bold; color: #2271b1;"><?php echo $stats['total']; ?></div>
+            </div>
+            <div class="disco747-stat-card" style="background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Confermati</div>
+                <div style="font-size: 32px; font-weight: bold; color: #00a32a;"><?php echo $stats['confermati']; ?></div>
+            </div>
+            <div class="disco747-stat-card" style="background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Attivi</div>
+                <div style="font-size: 32px; font-weight: bold; color: #f0b849;"><?php echo $stats['attivi']; ?></div>
+            </div>
+            <div class="disco747-stat-card" style="background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                <div style="font-size: 14px; color: #666; margin-bottom: 5px;">Annullati</div>
+                <div style="font-size: 32px; font-weight: bold; color: #d63638;"><?php echo $stats['annullati']; ?></div>
+            </div>
         </div>
-        <div style="text-align: right;">
-            <?php if ($storage_configured): ?>
-                <button id="disco747-start-batch-scan" class="button button-primary" style="background: #c28a4d; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; box-shadow: 0 4px 15px rgba(194, 138, 77, 0.4);">
-                    🔄 Analizza Ora
+
+        <!-- Card principale scansione -->
+        <div class="disco747-scan-card" style="background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 30px;">
+            
+            <div class="disco747-scan-header" style="margin-bottom: 20px;">
+                <h2 style="margin: 0 0 10px 0;">Analisi File Excel da Google Drive</h2>
+                <p style="color: #666; margin: 0;">Sincronizza automaticamente tutti i preventivi presenti su Google Drive</p>
+            </div>
+
+            <!-- Pulsante Analisi -->
+            <div class="disco747-scan-actions" style="margin-bottom: 20px;">
+                <button 
+                    id="disco747-start-scan" 
+                    class="button button-primary button-hero"
+                    style="padding: 15px 40px; font-size: 16px; height: auto;">
+                    <span class="dashicons dashicons-update" style="margin-top: 4px;"></span>
+                    Avvia Sincronizzazione
                 </button>
-            <?php else: ?>
-                <div style="background: rgba(220, 53, 69, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #dc3545;">
-                    <div style="color: #dc3545; font-weight: bold;">⚠️ Storage non configurato</div>
-                    <div style="font-size: 0.9rem; color: #eeeae6; margin-top: 5px;">
-                        <a href="<?php echo admin_url('admin.php?page=disco747-settings'); ?>" style="color: #c28a4d;">Configura ora</a>
+            </div>
+
+            <!-- Barra di avanzamento -->
+            <div id="disco747-progress-container" style="display: none; margin-top: 20px;">
+                <div style="margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="disco747-progress-text" style="font-weight: 600; color: #2271b1;">Preparazione...</span>
+                    <span id="disco747-progress-percentage" style="font-weight: 600; color: #2271b1;">0%</span>
+                </div>
+                <div style="background: #f0f0f1; border-radius: 4px; height: 30px; overflow: hidden; position: relative;">
+                    <div id="disco747-progress-bar" style="background: linear-gradient(90deg, #2271b1 0%, #135e96 100%); height: 100%; width: 0%; transition: width 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-weight: 600; font-size: 14px;">
+                        <span id="disco747-progress-count">0/0</span>
                     </div>
                 </div>
-            <?php endif; ?>
+                <div id="disco747-current-file" style="margin-top: 10px; font-size: 13px; color: #666; font-style: italic;"></div>
+            </div>
+
+            <!-- Risultati -->
+            <div id="disco747-scan-results" style="display: none; margin-top: 20px;"></div>
+
         </div>
-    </div>
-</div>
 
-<!-- Statistiche in Evidenza -->
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
-    
-    <div style="background: linear-gradient(135deg, #c28a4d 0%, #b8b1b3 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(194, 138, 77, 0.3);">
-        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-total"><?php echo number_format($stats['total_files']); ?></div>
-        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">📄 File Trovati</div>
-    </div>
-    
-    <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(40, 167, 69, 0.3);">
-        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-success"><?php echo number_format($stats['analyzed_success']); ?></div>
-        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">✅ Analizzati</div>
-    </div>
-    
-    <div style="background: linear-gradient(135deg, #17a2b8 0%, #6610f2 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(23, 162, 184, 0.3);">
-        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-confirmed"><?php echo number_format($stats['confirmed_count']); ?></div>
-        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">🎉 Confermati</div>
-    </div>
-    
-    <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(220, 53, 69, 0.3);">
-        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-errors"><?php echo number_format($stats['analysis_errors']); ?></div>
-        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">❌ Errori</div>
-    </div>
-</div>
-
-<!-- Progress Bar (nascosta inizialmente) -->
-<div id="disco747-scan-progress" style="display: none; background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
-    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-        <span style="font-weight: bold; color: #2b1e1a;">🔄 Scansione in corso...</span>
-        <span id="scan-progress-text" style="color: #c28a4d;">0%</span>
-    </div>
-    <div style="background: #e9ecef; border-radius: 10px; height: 8px; overflow: hidden;">
-        <div id="scan-progress-bar" style="background: linear-gradient(90deg, #c28a4d 0%, #b8b1b3 100%); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
-    </div>
-    <div id="scan-status-message" style="margin-top: 10px; font-size: 0.9rem; color: #666;"></div>
-</div>
-
-<!-- Sezione Tabella Principale -->
-<div style="background: white; border-radius: 15px; box-shadow: 0 6px 20px rgba(0,0,0,0.1); overflow: hidden;">
-    
-    <!-- Header Tabella -->
-    <div style="background: linear-gradient(135deg, #2b1e1a 0%, #3c3c3c 100%); padding: 20px; border-bottom: 3px solid #c28a4d;">
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
-            <h2 style="margin: 0; color: #c28a4d; font-size: 1.5rem;">
-                📋 File Excel Analizzati
-            </h2>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <!-- Filtri -->
-                <select id="filter-menu" style="padding: 8px; border-radius: 5px; border: 1px solid #ccc;">
-                    <option value="">Tutti i Menu</option>
-                    <option value="7">Menu 7</option>
-                    <option value="74">Menu 74</option>
-                    <option value="747">Menu 747</option>
-                </select>
-                
-                <input type="text" id="search-excel" placeholder="Cerca nome, evento..." style="padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 200px;">
-                
-                <button id="refresh-table" class="button button-secondary" style="padding: 8px 16px;">
-                    🔄 Aggiorna
+        <!-- Tabella preventivi sincronizzati -->
+        <div class="disco747-table-card" style="background: #fff; padding: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0;">Preventivi Sincronizzati</h2>
+                <button id="disco747-refresh-table" class="button">
+                    <span class="dashicons dashicons-update-alt"></span>
+                    Aggiorna
                 </button>
             </div>
-        </div>
-    </div>
 
-    <!-- Contenuto Tabella -->
-    <div style="padding: 20px;">
-        <div id="excel-table-container">
-            <!-- Tabella verrà caricata via AJAX -->
-            <div style="text-align: center; padding: 40px; color: #666;">
-                <div style="font-size: 3rem; margin-bottom: 20px;">📊</div>
-                <p>Clicca "Analizza Ora" per iniziare la scansione dei file Excel.</p>
-                <p style="font-size: 0.9rem; color: #999;">I dati verranno caricati automaticamente dopo la prima scansione.</p>
-            </div>
-        </div>
-        
-        <!-- Paginazione -->
-        <div id="excel-pagination" style="margin-top: 20px; text-align: center; display: none;">
-            <!-- Paginazione verrà inserita via AJAX -->
-        </div>
-    </div>
-</div>
-
-<!-- Sezione Debug (collassabile) -->
-<div style="background: white; border-radius: 15px; box-shadow: 0 6px 20px rgba(0,0,0,0.1); margin-top: 20px; overflow: hidden;">
-    <div style="background: #f8f9fa; padding: 15px; border-bottom: 1px solid #e9ecef; cursor: pointer;" onclick="toggleDebugSection()">
-        <div style="display: flex; align-items: center; justify-content: between;">
-            <h3 style="margin: 0; color: #2b1e1a; font-size: 1.2rem;">
-                🔧 Debug & Informazioni Sistema
-            </h3>
-            <span id="debug-toggle" style="float: right; color: #c28a4d; font-weight: bold;">▼</span>
-        </div>
-    </div>
-    
-    <div id="debug-content" style="padding: 20px; display: none;">
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
-            
-            <!-- Info Ultima Scansione -->
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #c28a4d;">
-                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">📅 Ultima Scansione</h4>
-                <div id="last-scan-info">
-                    <p style="margin: 5px 0;"><strong>Data:</strong> <?php echo esc_html($stats['last_scan']); ?></p>
-                    <p style="margin: 5px 0;"><strong>File processati:</strong> <span id="debug-last-files">-</span></p>
-                    <p style="margin: 5px 0;"><strong>Tempo impiegato:</strong> <span id="debug-last-time">-</span></p>
+            <!-- Filtri -->
+            <div class="disco747-filters" style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;">
+                <div>
+                    <label style="display: block; margin-bottom: 5px; font-weight: 600; font-size: 13px;">Cerca</label>
+                    <input type="text" id="filter-search" class="regular-text" placeholder="Nome cliente, email, telefono...">
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 5px; font-weight: 600; font-size: 13px;">Stato</label>
+                    <select id="filter-stato" class="regular-text">
+                        <option value="">Tutti</option>
+                        <option value="attivo">Attivo</option>
+                        <option value="confermato">Confermato</option>
+                        <option value="annullato">Annullato</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 5px; font-weight: 600; font-size: 13px;">Menu</label>
+                    <select id="filter-menu" class="regular-text">
+                        <option value="">Tutti</option>
+                        <option value="Menu 7">Menu 7</option>
+                        <option value="Menu 74">Menu 74</option>
+                        <option value="Menu 747">Menu 747</option>
+                        <option value="Menu 7-4">Menu 7-4</option>
+                        <option value="Menu 7-4-7">Menu 7-4-7</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="display: block; margin-bottom: 5px; font-weight: 600; font-size: 13px;">Anno</label>
+                    <select id="filter-anno" class="regular-text">
+                        <option value="">Tutti</option>
+                        <option value="2025">2025</option>
+                        <option value="2024">2024</option>
+                        <option value="2023">2023</option>
+                    </select>
                 </div>
             </div>
-            
-            <!-- Info Storage -->
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #17a2b8;">
-                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">☁️ Storage</h4>
-                <p style="margin: 5px 0;"><strong>Tipo:</strong> <?php echo ucfirst($storage_type); ?></p>
-                <p style="margin: 5px 0;"><strong>Stato:</strong> 
-                    <span style="color: <?php echo $storage_configured ? '#28a745' : '#dc3545'; ?>; font-weight: bold;">
-                        <?php echo $storage_configured ? '✅ Configurato' : '❌ Non configurato'; ?>
-                    </span>
-                </p>
-                <p style="margin: 5px 0;"><strong>Cartella:</strong> /747-Preventivi/</p>
+
+            <!-- Tabella -->
+            <div id="disco747-table-container" style="overflow-x: auto;">
+                <table class="wp-list-table widefat fixed striped" style="min-width: 1200px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 60px;">ID</th>
+                            <th style="width: 100px;">Data Evento</th>
+                            <th>Cliente</th>
+                            <th>Tipo Evento</th>
+                            <th style="width: 100px;">Menu</th>
+                            <th style="width: 80px;">Invitati</th>
+                            <th style="width: 100px;">Importo</th>
+                            <th style="width: 100px;">Acconto</th>
+                            <th style="width: 100px;">Stato</th>
+                            <th style="width: 120px;">Azioni</th>
+                        </tr>
+                    </thead>
+                    <tbody id="disco747-table-body">
+                        <tr>
+                            <td colspan="10" style="text-align: center; padding: 40px; color: #666;">
+                                <span class="dashicons dashicons-update" style="font-size: 48px; opacity: 0.3;"></span>
+                                <p>Caricamento dati in corso...</p>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
-            
-            <!-- Info Database -->
-            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
-                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">🗄️ Database</h4>
-                <p style="margin: 5px 0;"><strong>Tabella:</strong> wp_disco747_excel_analysis</p>
-                <p style="margin: 5px 0;"><strong>Record:</strong> <span id="debug-db-records"><?php echo number_format($stats['total_files']); ?></span></p>
-                <p style="margin: 5px 0;"><strong>Stato:</strong> 
-                    <span style="color: #28a745; font-weight: bold;">✅ Attivo</span>
-                </p>
+
+            <!-- Paginazione -->
+            <div id="disco747-pagination" style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center;">
+                <div id="disco747-showing-text" style="color: #666; font-size: 13px;"></div>
+                <div id="disco747-pagination-buttons"></div>
             </div>
+
         </div>
-        
-        <!-- Log Attività Recente -->
-        <div style="margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 10px;">
-            <h4 style="margin: 0 0 15px 0; color: #2b1e1a;">📝 Log Attività Recente</h4>
-            <div id="activity-log" style="background: #2b1e1a; color: #00ff00; padding: 15px; border-radius: 5px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto;">
-                <div>[<?php echo date('Y-m-d H:i:s'); ?>] Excel Scan Page caricata</div>
-                <div>[<?php echo date('Y-m-d H:i:s'); ?>] Statistiche aggiornate: <?php echo $stats['total_files']; ?> file trovati</div>
-                <div style="color: #c28a4d;">[Sistema] Pronto per nuova scansione</div>
-            </div>
-        </div>
+
     </div>
 </div>
-```
-
-</div>
-
-<!-- Modal per Errori Dettagliati (nascosto inizialmente) -->
-
-<div id="error-details-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999;">
-    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 15px; max-width: 600px; width: 90%;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h3 style="margin: 0; color: #2b1e1a;">🚨 Dettagli Errore</h3>
-            <button onclick="closeErrorModal()" style="background: none; border: none; font-size: 24px; cursor: pointer;">×</button>
-        </div>
-        <div id="error-details-content" style="background: #f8f9fa; padding: 15px; border-radius: 10px; font-family: monospace; max-height: 300px; overflow-y: auto;">
-            <!-- Contenuto errore verrà inserito via JS -->
-        </div>
-        <div style="margin-top: 20px; text-align: right;">
-            <button onclick="closeErrorModal()" class="button button-primary">Chiudi</button>
-        </div>
-    </div>
-</div>
-
-<script>
-// Variabili globali
-let isScanning = false;
-let currentPage = 1;
-let totalPages = 1;
-
-// Toggle sezione debug
-function toggleDebugSection() {
-    const content = document.getElementById('debug-content');
-    const toggle = document.getElementById('debug-toggle');
-    
-    if (content.style.display === 'none') {
-        content.style.display = 'block';
-        toggle.textContent = '▲';
-    } else {
-        content.style.display = 'none';
-        toggle.textContent = '▼';
-    }
-}
-
-// Chiudi modal errore
-function closeErrorModal() {
-    document.getElementById('error-details-modal').style.display = 'none';
-}
-
-// Mostra errori dettagliati
-function showErrorDetails(errors) {
-    const modal = document.getElementById('error-details-modal');
-    const content = document.getElementById('error-details-content');
-    
-    if (typeof errors === 'string') {
-        content.innerHTML = '<div style="color: #dc3545;">' + errors + '</div>';
-    } else {
-        content.innerHTML = '<pre style="white-space: pre-wrap; color: #dc3545;">' + JSON.stringify(errors, null, 2) + '</pre>';
-
-```
-}
-
-modal.style.display = 'block';
-```
-
-}
-
-// Aggiungi log attività
-function addActivityLog(message, type = ‘info’) {
-const log = document.getElementById(‘activity-log’);
-const timestamp = new Date().toLocaleString(‘it-IT’);
-const color = type === ‘error’ ? ‘#ff6b6b’ : type === ‘success’ ? ‘#51cf66’ : ‘#00ff00’;
-
-```
-const logEntry = document.createElement('div');
-logEntry.style.color = color;
-logEntry.innerHTML = `[${timestamp}] ${message}`;
-
-log.appendChild(logEntry);
-log.scrollTop = log.scrollHeight;
-```
-
-}
-
-// Aggiorna statistiche
-function updateStats(data) {
-if (data.stats) {
-document.getElementById(‘stats-total’).textContent = Number(data.stats.total_files || 0).toLocaleString();
-document.getElementById(‘stats-success’).textContent = Number(data.stats.analyzed_success || 0).toLocaleString();
-document.getElementById(‘stats-confirmed’).textContent = Number(data.stats.confirmed_count || 0).toLocaleString();
-document.getElementById(‘stats-errors’).textContent = Number(data.stats.analysis_errors || 0).toLocaleString();
-
-```
-    // Aggiorna debug
-    document.getElementById('debug-db-records').textContent = Number(data.stats.total_files || 0).toLocaleString();
-}
-```
-
-}
-
-// Inizializzazione quando il DOM è pronto
-document.addEventListener(‘DOMContentLoaded’, function() {
-// Carica tabella iniziale
-loadExcelTable();
-
-```
-// Event listeners
-setupEventListeners();
-
-addActivityLog('Interfaccia Excel Scan inizializzata', 'success');
-```
-
-});
-
-// Setup event listeners
-function setupEventListeners() {
-// Pulsante scansione principale
-const scanButton = document.getElementById(‘disco747-start-batch-scan’);
-if (scanButton) {
-scanButton.addEventListener(‘click’, startBatchScan);
-}
-
-```
-// Filtri e ricerca
-document.getElementById('filter-menu')?.addEventListener('change', loadExcelTable);
-document.getElementById('search-excel')?.addEventListener('input', debounce(loadExcelTable, 500));
-document.getElementById('refresh-table')?.addEventListener('click', loadExcelTable);
-```
-
-}
-
-// Debounce function per la ricerca
-function debounce(func, wait) {
-let timeout;
-return function executedFunction(…args) {
-const later = () => {
-clearTimeout(timeout);
-func(…args);
-};
-clearTimeout(timeout);
-timeout = setTimeout(later, wait);
-};
-}
-
-// Placeholder per le funzioni AJAX - verranno implementate nel file JS separato
-function startBatchScan() {
-console.log(‘Batch scan avviato - implementazione nel file excel-scan.js’);
-addActivityLog(‘Scansione batch richiesta - caricamento excel-scan.js…’, ‘info’);
-}
-
-function loadExcelTable() {
-console.log(‘Caricamento tabella richiesto - implementazione nel file excel-scan.js’);
-}
-</script>
 
 <style>
-/* Stili CSS specifici per la pagina Excel Scan */
-.disco747-excel-scan-page .button:hover {
+.disco747-scan-excel-page {
+    margin-top: 20px;
+}
+
+.disco747-stat-card:hover {
     transform: translateY(-2px);
-    transition: all 0.3s ease;
+    transition: transform 0.2s ease;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
 }
 
-.disco747-excel-scan-page table {
+.button-hero {
+    transition: all 0.2s ease;
+}
+
+.button-hero:hover {
+    transform: scale(1.02);
+}
+
+#disco747-progress-bar {
+    position: relative;
+}
+
+.disco747-status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-attivo {
+    background: #fef7e0;
+    color: #976b00;
+}
+
+.status-confermato {
+    background: #d5f4e6;
+    color: #007017;
+}
+
+.status-annullato {
+    background: #fde7e9;
+    color: #a00;
+}
+
+.disco747-filters input,
+.disco747-filters select {
     width: 100%;
-    border-collapse: collapse;
-    font-size: 14px;
-}
-
-.disco747-excel-scan-page table th,
-.disco747-excel-scan-page table td {
-    padding: 12px 8px;
-    border-bottom: 1px solid #e9ecef;
-    text-align: left;
-}
-
-.disco747-excel-scan-page table th {
-    background: #f8f9fa;
-    font-weight: bold;
-    color: #2b1e1a;
-    border-bottom: 2px solid #c28a4d;
-}
-
-.disco747-excel-scan-page table tr:hover {
-    background: #f8f9fa;
-}
-
-.disco747-excel-scan-page .status-badge {
-    padding: 4px 8px;
-    border-radius: 4px;
-    font-size: 12px;
-    font-weight: bold;
-    text-transform: uppercase;
-}
-
-.disco747-excel-scan-page .status-conf {
-    background: #d4edda;
-    color: #155724;
-}
-
-.disco747-excel-scan-page .status-no {
-    background: #f8d7da;
-    color: #721c24;
-}
-
-.disco747-excel-scan-page .status-pending {
-    background: #fff3cd;
-    color: #856404;
-}
-
-.disco747-excel-scan-page .btn-modifica {
-    background: #c28a4d;
-    color: white;
-    border: none;
-    padding: 6px 12px;
-    border-radius: 4px;
-    font-size: 12px;
-    cursor: pointer;
-    text-decoration: none;
-}
-
-.disco747-excel-scan-page .btn-modifica:hover {
-    background: #a67b42;
-    color: white;
-}
-
-@media (max-width: 768px) {
-    .disco747-excel-scan-page table {
-        font-size: 12px;
-    }
-    
-    .disco747-excel-scan-page table th,
-    .disco747-excel-scan-page table td {
-        padding: 8px 4px;
-    }
 }
 </style>
+
+<script>
+jQuery(document).ready(function($) {
+    
+    let currentPage = 1;
+    let totalItems = 0;
+    let itemsPerPage = 20;
+    let allData = [];
+    
+    // Carica dati iniziali
+    loadTableData();
+    
+    // Pulsante avvia scan
+    $('#disco747-start-scan').on('click', function() {
+        startBatchScan();
+    });
+    
+    // Refresh tabella
+    $('#disco747-refresh-table').on('click', function() {
+        loadTableData();
+    });
+    
+    // Filtri
+    $('#filter-search, #filter-stato, #filter-menu, #filter-anno').on('change keyup', function() {
+        filterTableData();
+    });
+    
+    /**
+     * Avvia batch scan con progress bar
+     */
+    function startBatchScan() {
+        const $button = $('#disco747-start-scan');
+        const $progressContainer = $('#disco747-progress-container');
+        const $results = $('#disco747-scan-results');
+        
+        // Disabilita pulsante
+        $button.prop('disabled', true).html('<span class="dashicons dashicons-update-alt" style="animation: rotation 1s infinite linear;"></span> Sincronizzazione in corso...');
+        
+        // Mostra progress
+        $progressContainer.show();
+        $results.hide().html('');
+        
+        updateProgress(0, 'Connessione a Google Drive...', 0, 0);
+        
+        // Chiamata AJAX
+        $.ajax({
+            url: ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'disco747_scan_drive_batch',
+                nonce: '<?php echo wp_create_nonce("disco747_scan_drive"); ?>'
+            },
+            success: function(response) {
+                if (response.success) {
+                    const data = response.data;
+                    
+                    // Simula progress (in produzione dovrebbe essere real-time via WebSocket o polling)
+                    simulateProgress(data.found, function() {
+                        showResults(data);
+                        $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Avvia Sincronizzazione');
+                        
+                        // Ricarica tabella
+                        setTimeout(function() {
+                            loadTableData();
+                        }, 1000);
+                    });
+                } else {
+                    showError('Errore: ' + (response.data || 'Errore sconosciuto'));
+                    $button.prop('disabled', false').html('<span class="dashicons dashicons-update"></span> Avvia Sincronizzazione');
+                }
+            },
+            error: function() {
+                showError('Errore di connessione al server');
+                $button.prop('disabled', false).html('<span class="dashicons dashicons-update"></span> Avvia Sincronizzazione');
+            }
+        });
+    }
+    
+    /**
+     * Simula progress bar (in produzione sostituire con polling real-time)
+     */
+    function simulateProgress(total, callback) {
+        let current = 0;
+        const interval = setInterval(function() {
+            current += Math.floor(Math.random() * 3) + 1;
+            if (current > total) current = total;
+            
+            const percentage = Math.floor((current / total) * 100);
+            updateProgress(percentage, `Analisi file ${current}/${total}...`, current, total);
+            
+            if (current >= total) {
+                clearInterval(interval);
+                setTimeout(callback, 500);
+            }
+        }, 300);
+    }
+    
+    /**
+     * Aggiorna progress bar
+     */
+    function updateProgress(percentage, text, current, total) {
+        $('#disco747-progress-bar').css('width', percentage + '%');
+        $('#disco747-progress-percentage').text(percentage + '%');
+        $('#disco747-progress-text').text(text);
+        $('#disco747-progress-count').text(current + '/' + total);
+    }
+    
+    /**
+     * Mostra risultati
+     */
+    function showResults(data) {
+        let html = '<div style="background: #d5f4e6; border-left: 4px solid #00a32a; padding: 15px; border-radius: 4px;">';
+        html += '<h3 style="margin: 0 0 10px 0; color: #007017;">Sincronizzazione completata!</h3>';
+        html += '<div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px;">';
+        html += '<div><strong>File trovati:</strong> ' + data.found + '</div>';
+        html += '<div><strong>Processati:</strong> ' + data.processed + '</div>';
+        html += '<div><strong>Nuovi:</strong> ' + data.inserted + '</div>';
+        html += '<div><strong>Aggiornati:</strong> ' + data.updated + '</div>';
+        html += '</div>';
+        
+        if (data.errors > 0) {
+            html += '<div style="margin-top: 10px; color: #d63638;"><strong>Errori:</strong> ' + data.errors + '</div>';
+        }
+        
+        html += '</div>';
+        
+        $('#disco747-scan-results').html(html).show();
+    }
+    
+    /**
+     * Mostra errore
+     */
+    function showError(message) {
+        let html = '<div style="background: #fde7e9; border-left: 4px solid #d63638; padding: 15px; border-radius: 4px; color: #a00;">';
+        html += '<strong>Errore:</strong> ' + message;
+        html += '</div>';
+        $('#disco747-scan-results').html(html).show();
+        $('#disco747-progress-container').hide();
+    }
+    
+    /**
+     * Carica dati tabella
+     */
+    function loadTableData() {
+        $('#disco747-table-body').html('<tr><td colspan="10" style="text-align: center; padding: 40px;"><span class="dashicons dashicons-update-alt" style="animation: rotation 1s infinite linear; font-size: 32px;"></span><p>Caricamento...</p></td></tr>');
+        
+        $.ajax({
+            url: ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'disco747_get_preventivi_table',
+                nonce: '<?php echo wp_create_nonce("disco747_table"); ?>'
+            },
+            success: function(response) {
+                if (response.success) {
+                    allData = response.data.preventivi;
+                    totalItems = allData.length;
+                    filterTableData();
+                } else {
+                    $('#disco747-table-body').html('<tr><td colspan="10" style="text-align: center; padding: 40px; color: #d63638;">Errore caricamento dati</td></tr>');
+                }
+            },
+            error: function() {
+                $('#disco747-table-body').html('<tr><td colspan="10" style="text-align: center; padding: 40px; color: #d63638;">Errore di connessione</td></tr>');
+            }
+        });
+    }
+    
+    /**
+     * Filtra dati tabella
+     */
+    function filterTableData() {
+        const search = $('#filter-search').val().toLowerCase();
+        const stato = $('#filter-stato').val();
+        const menu = $('#filter-menu').val();
+        const anno = $('#filter-anno').val();
+        
+        let filtered = allData.filter(function(item) {
+            // Filtro ricerca
+            if (search && !item.nome_cliente.toLowerCase().includes(search) && 
+                !item.email.toLowerCase().includes(search) && 
+                !item.telefono.includes(search)) {
+                return false;
+            }
+            
+            // Filtro stato
+            if (stato && item.stato !== stato) {
+                return false;
+            }
+            
+            // Filtro menu
+            if (menu && item.tipo_menu !== menu) {
+                return false;
+            }
+            
+            // Filtro anno
+            if (anno && !item.data_evento.startsWith(anno)) {
+                return false;
+            }
+            
+            return true;
+        });
+        
+        renderTable(filtered);
+    }
+    
+    /**
+     * Renderizza tabella
+     */
+    function renderTable(data) {
+        if (data.length === 0) {
+            $('#disco747-table-body').html('<tr><td colspan="10" style="text-align: center; padding: 40px; color: #666;">Nessun preventivo trovato</td></tr>');
+            $('#disco747-showing-text').text('');
+            $('#disco747-pagination-buttons').html('');
+            return;
+        }
+        
+        // Paginazione
+        const start = (currentPage - 1) * itemsPerPage;
+        const end = start + itemsPerPage;
+        const pageData = data.slice(start, end);
+        const totalPages = Math.ceil(data.length / itemsPerPage);
+        
+        // Renderizza righe
+        let html = '';
+        pageData.forEach(function(item) {
+            const statusClass = 'status-' + item.stato;
+            const statusLabel = item.stato.charAt(0).toUpperCase() + item.stato.slice(1);
+            
+            html += '<tr>';
+            html += '<td><strong>#' + item.id + '</strong></td>';
+            html += '<td>' + formatDate(item.data_evento) + '</td>';
+            html += '<td><strong>' + item.nome_cliente + '</strong><br><small style="color: #666;">' + item.email + '</small></td>';
+            html += '<td>' + (item.tipo_evento || '-') + '</td>';
+            html += '<td>' + item.tipo_menu + '</td>';
+            html += '<td>' + item.numero_invitati + '</td>';
+            html += '<td><strong>€ ' + parseFloat(item.importo_totale).toFixed(2) + '</strong></td>';
+            html += '<td>€ ' + parseFloat(item.acconto).toFixed(2) + '</td>';
+            html += '<td><span class="disco747-status-badge ' + statusClass + '">' + statusLabel + '</span></td>';
+            html += '<td>';
+            html += '<a href="' + item.googledrive_url + '" target="_blank" class="button button-small" title="Apri su Google Drive"><span class="dashicons dashicons-cloud"></span></a> ';
+            html += '<button class="button button-small disco747-view-details" data-id="' + item.id + '" title="Dettagli"><span class="dashicons dashicons-visibility"></span></button>';
+            html += '</td>';
+            html += '</tr>';
+        });
+        
+        $('#disco747-table-body').html(html);
+        
+        // Testo "Showing X of Y"
+        $('#disco747-showing-text').text('Visualizzati ' + (start + 1) + '-' + Math.min(end, data.length) + ' di ' + data.length + ' preventivi');
+        
+        // Pulsanti paginazione
+        renderPagination(totalPages);
+    }
+    
+    /**
+     * Renderizza paginazione
+     */
+    function renderPagination(totalPages) {
+        if (totalPages <= 1) {
+            $('#disco747-pagination-buttons').html('');
+            return;
+        }
+        
+        let html = '';
+        
+        // Precedente
+        if (currentPage > 1) {
+            html += '<button class="button disco747-page-btn" data-page="' + (currentPage - 1) + '">« Precedente</button> ';
+        }
+        
+        // Numeri pagina
+        for (let i = 1; i <= Math.min(totalPages, 5); i++) {
+            const active = i === currentPage ? ' button-primary' : '';
+            html += '<button class="button disco747-page-btn' + active + '" data-page="' + i + '">' + i + '</button> ';
+        }
+        
+        // Successiva
+        if (currentPage < totalPages) {
+            html += '<button class="button disco747-page-btn" data-page="' + (currentPage + 1) + '">Successiva »</button>';
+        }
+        
+        $('#disco747-pagination-buttons').html(html);
+    }
+    
+    /**
+     * Click paginazione
+     */
+    $(document).on('click', '.disco747-page-btn', function() {
+        currentPage = parseInt($(this).data('page'));
+        filterTableData();
+    });
+    
+    /**
+     * Formatta data
+     */
+    function formatDate(dateString) {
+        const date = new Date(dateString);
+        const day = ('0' + date.getDate()).slice(-2);
+        const month = ('0' + (date.getMonth() + 1)).slice(-2);
+        const year = date.getFullYear();
+        return day + '/' + month + '/' + year;
+    }
+    
+});
+
+// Animazione rotazione
+const style = document.createElement('style');
+style.textContent = '@keyframes rotation { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }';
+document.head.appendChild(style);
+</script>
