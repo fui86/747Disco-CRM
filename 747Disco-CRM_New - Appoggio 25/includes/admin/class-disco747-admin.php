@@ -168,45 +168,81 @@ class Disco747_Admin {
     }
     
     /**
-     * Render Dashboard
+     * Render Dashboard - FIXED PATH
      */
     public function render_dashboard_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/dashboard-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/dashboard-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
-     * Render Form Preventivo
+     * Render Form Preventivo - FIXED PATH
      */
     public function render_form_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/form-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/form-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
-     * Render Gestione Preventivi
+     * Render Gestione Preventivi - FIXED PATH
      */
     public function render_manage_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/manage-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/manage-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
-     * Render Scansione Excel
+     * Render Scansione Excel - FIXED PATH
      */
     public function render_scan_excel_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/scan-excel-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/scan-excel-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
-     * Render Impostazioni
+     * Render Impostazioni - FIXED PATH
      */
     public function render_settings_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/settings-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/settings-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
-     * Render Messaggi Automatici
+     * Render Messaggi Automatici - FIXED PATH
      */
     public function render_messages_page() {
-        require_once plugin_dir_path(dirname(__FILE__)) . 'admin/views/messages-page.php';
+        $view_file = plugin_dir_path(__FILE__) . 'views/messages-page.php';
+        if (file_exists($view_file)) {
+            require_once $view_file;
+        } else {
+            echo '<div class="wrap"><h1>Errore: File view non trovato</h1><p>' . esc_html($view_file) . '</p></div>';
+            error_log('[747Disco-Admin] File view non trovato: ' . $view_file);
+        }
     }
     
     /**
