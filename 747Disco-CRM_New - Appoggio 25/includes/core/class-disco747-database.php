@@ -1,10 +1,10 @@
 <?php
 /**
  * Database Manager - 747 Disco CRM
- * VERSIONE 11.6.4-FIX-PREVENTIVO-ID - Rimosso campo preventivo_id obsoleto
+ * VERSIONE 11.6.3 - Aggiunto extra1_importo, extra2_importo, extra3_importo
  * 
  * @package Disco747_CRM
- * @version 11.6.4-FIX
+ * @version 11.6.3-EXTRA-PRICES
  */
 
 namespace Disco747_CRM\Core;
@@ -119,23 +119,6 @@ class Disco747_Database {
                 }
             }
         }
-        
-        // ✅ FIX: Rimuovi colonna preventivo_id obsoleta se esiste
-        if ($this->column_exists('preventivo_id')) {
-            error_log('[747Disco-DB] Rimozione colonna obsoleta preventivo_id...');
-            
-            // Prima rimuovi l'indice se esiste
-            $wpdb->query("ALTER TABLE {$this->table_name} DROP INDEX IF EXISTS idx_preventivo_id");
-            
-            // Poi rimuovi la colonna
-            $result = $wpdb->query("ALTER TABLE {$this->table_name} DROP COLUMN preventivo_id");
-            
-            if ($result !== false) {
-                error_log('[747Disco-DB] ✅ Colonna preventivo_id rimossa con successo');
-            } else {
-                error_log('[747Disco-DB] ⚠️ Errore rimozione preventivo_id: ' . $wpdb->last_error);
-            }
-        }
     }
     
     /**
@@ -162,7 +145,7 @@ class Disco747_Database {
         
         $insert_data = array(
             'data_evento' => $data['data_evento'],
-            'tipo_evento' => $data['tipo_evento'] ?? '',
+            'tipo_evento' => $data['tipo_evento'],
             'tipo_menu' => $data['tipo_menu'] ?? 'Menu 7',
             'numero_invitati' => $data['numero_invitati'] ?? 50,
             'orario_evento' => $data['orario_evento'] ?? '',
