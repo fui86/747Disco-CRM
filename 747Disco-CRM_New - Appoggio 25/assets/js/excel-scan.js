@@ -1,820 +1,557 @@
 /**
- * Excel Scan JavaScript Handler
+ * JavaScript per Scansione Excel Auto - 747 Disco CRM
+ * DEBUG VERSION per iPhone - traccia ogni passaggio
  * 
- * @package    Disco747_CRM
- * @subpackage Assets/JS
- * @version    11.5.9-EXCEL-SCAN
+ * @version 1.0.3-FIX-SELECTOR
  */
 
 (function($) {
     'use strict';
+
+    // ========================================================================
+    // SISTEMA DEBUG VISIVO PER iPHONE
+    // ========================================================================
     
-    // Main Excel Scan Manager
-    window.Disco747ExcelScan = {
+    const DebugPanel = {
+        initialized: false,
+        $panel: null,
+        $content: null,
+        logCount: 0,
         
-        // Configuration
-        config: {
-            ajaxUrl: typeof disco747ExcelScan !== 'undefined' ? disco747ExcelScan.ajaxurl : ajaxurl,
-            nonce: typeof disco747ExcelScan !== 'undefined' ? disco747ExcelScan.nonce : '',
-            strings: typeof disco747ExcelScan !== 'undefined' ? disco747ExcelScan.strings : {
-                processing: 'Elaborazione in corso...',
-                success: 'Operazione completata',
-                error: 'Si è verificato un errore'
-            }
-        },
-        
-        // State
-        state: {
-            isScanning: false,
-            isPaused: false,
-            currentIndex: 0,
-            totalFiles: 0,
-            successCount: 0,
-            errorCount: 0,
-            skipCount: 0,
-            startTime: null,
-            elapsedTimer: null,
-            files: [],
-            results: [],
-            abortController: null
-        },
-        
-        // Debug levels
-        debugLevels: {
-            ERROR: 'error',
-            WARNING: 'warning',
-            INFO: 'info',
-            SUCCESS: 'success',
-            DEBUG: 'debug'
-        },
-        
-        // Initialize
         init: function() {
-            this.bindEvents();
-            this.loadStoredState();
-            this.initializeUI();
-            this.log('Excel Scan Manager inizializzato', this.debugLevels.SUCCESS);
-        },
-        
-        // Bind events
-        bindEvents: function() {
-            const self = this;
+            if (this.initialized) return;
             
-            // Main batch scan button
-            $(document).on('click', '#start-batch, #start-batch-analysis', function(e) {
-                e.preventDefault();
-                self.startBatchScan();
-            });
-            
-            // Stop batch scan
-            $(document).on('click', '#stop-batch, #stop-batch-analysis', function(e) {
-                e.preventDefault();
-                self.stopBatchScan();
-            });
-            
-            // Pause/Resume
-            $(document).on('click', '#pause-batch', function(e) {
-                e.preventDefault();
-                self.togglePauseScan();
-            });
-            
-            // Single file scan
-            $(document).on('click', '.scan-single-file', function(e) {
-                e.preventDefault();
-                const fileId = $(this).data('file-id');
-                const fileName = $(this).data('file-name');
-                self.scanSingleFile(fileId, fileName);
-            });
-            
-            // Refresh table
-            $(document).on('click', '#refresh-table, #refresh-analysis-table', function(e) {
-                e.preventDefault();
-                self.refreshAnalysisTable();
-            });
-            
-            // Debug controls
-            $(document).on('click', '#toggle-debug', function() {
-                $('#debug-content, #debug-log-container').slideToggle();
-            });
-            
-            $(document).on('click', '#clear-debug, #clear-debug-log', function() {
-                self.clearDebugLog();
-            });
-            
-            $(document).on('click', '#download-debug-log', function() {
-                self.downloadDebugLog();
-            });
-            
-            // Filter controls
-            $(document).on('input', '#search-analysis', function() {
-                self.filterTable();
-            });
-            
-            $(document).on('change', '#filter-menu, #filter-stato', function() {
-                self.filterTable();
-            });
-            
-            // Auto-save state every 30 seconds during scan
-            setInterval(function() {
-                if (self.state.isScanning) {
-                    self.saveState();
-                }
-            }, 30000);
-        },
-        
-        // Initialize UI
-        initializeUI: function() {
-            // Check if we're on the Excel scan page
-            if ($('#batch-progress, .batch-progress-container').length === 0) {
-                return;
-            }
-            
-            // Set initial values
-            this.updateProgressUI();
-            
-            // Load any pending batch
-            if (this.state.files.length > 0 && !this.state.isScanning) {
-                this.showResumeBatchPrompt();
-            }
-        },
-        
-        // Start batch scan
-        startBatchScan: function() {
-            const self = this;
-            
-            if (this.state.isScanning) {
-                this.log('Scansione già in corso', this.debugLevels.WARNING);
-                return;
-            }
-            
-            // Get files list from page
-            if (typeof batchFiles !== 'undefined' && batchFiles.length > 0) {
-                this.state.files = batchFiles;
-            } else {
-                // Try to get from data attribute
-                const filesData = $('#excel-files-data').data('files');
-                if (filesData && filesData.length > 0) {
-                    this.state.files = filesData;
-                } else {
-                    this.log('Nessun file da scansionare', this.debugLevels.ERROR);
-                    alert('Nessun file Excel trovato per la scansione');
-                    return;
-                }
-            }
-            
-            // Reset state
-            this.state.currentIndex = 0;
-            this.state.totalFiles = this.state.files.length;
-            this.state.successCount = 0;
-            this.state.errorCount = 0;
-            this.state.skipCount = 0;
-            this.state.results = [];
-            this.state.startTime = Date.now();
-            this.state.isScanning = true;
-            this.state.isPaused = false;
-            
-            // Create abort controller for cancellation
-            if (window.AbortController) {
-                this.state.abortController = new AbortController();
-            }
-            
-            this.log('=== INIZIO SCANSIONE BATCH ===', this.debugLevels.INFO);
-            this.log('File da processare: ' + this.state.totalFiles, this.debugLevels.INFO);
-            
-            // Update UI
-            $('#start-batch, #start-batch-analysis').hide();
-            $('#stop-batch, #stop-batch-analysis').show();
-            $('#pause-batch').show();
-            $('#batch-progress, .batch-progress-container').slideDown();
-            
-            // Start elapsed timer
-            this.startElapsedTimer();
-            
-            // Save initial state
-            this.saveState();
-            
-            // Process first file
-            this.processNextFile();
-        },
-        
-        // Process next file
-        processNextFile: function() {
-            const self = this;
-            
-            // Check if stopped or completed
-            if (!this.state.isScanning || this.state.currentIndex >= this.state.totalFiles) {
-                this.completeBatchScan();
-                return;
-            }
-            
-            // Check if paused
-            if (this.state.isPaused) {
-                setTimeout(function() {
-                    self.processNextFile();
-                }, 1000);
-                return;
-            }
-            
-            const file = this.state.files[this.state.currentIndex];
-            const fileNumber = this.state.currentIndex + 1;
-            
-            this.log(`[${fileNumber}/${this.state.totalFiles}] Analizzando: ${file.name}`, this.debugLevels.INFO);
-            
-            // Update UI
-            this.updateProgressUI();
-            $('#batch-status, #batch-current-file').text(`Analizzando: ${file.name}`);
-            
-            // Make AJAX request
-            const ajaxOptions = {
-                url: this.config.ajaxUrl,
-                type: 'POST',
-                data: {
-                    action: 'disco747_batch_scan_excel',
-                    nonce: this.config.nonce,
-                    file_id: file.id,
-                    file_name: file.name,
-                    file_path: file.path || '',
-                    current_index: this.state.currentIndex,
-                    total_files: this.state.totalFiles
-                },
-                timeout: 30000, // 30 seconds timeout
-                success: function(response) {
-                    self.handleFileSuccess(response, file, fileNumber);
-                },
-                error: function(xhr, status, error) {
-                    self.handleFileError(error, file, fileNumber, status);
-                },
-                complete: function() {
-                    self.state.currentIndex++;
-                    
-                    // Small delay between files to avoid overwhelming server
-                    setTimeout(function() {
-                        self.processNextFile();
-                    }, 500);
-                }
-            };
-            
-            // Add abort signal if available
-            if (this.state.abortController) {
-                ajaxOptions.signal = this.state.abortController.signal;
-            }
-            
-            $.ajax(ajaxOptions);
-        },
-        
-        // Handle file success
-        handleFileSuccess: function(response, file, fileNumber) {
-            if (response.success && response.data && response.data.ok) {
-                this.state.successCount++;
-                
-                const result = {
-                    file: file,
-                    success: true,
-                    data: response.data.data,
-                    database_id: response.data.database_id
-                };
-                
-                this.state.results.push(result);
-                
-                this.log(`✅ File ${fileNumber} analizzato con successo`, this.debugLevels.SUCCESS);
-                
-                if (response.data.data) {
-                    const data = response.data.data;
-                    this.log(`  📊 Menu: ${data.tipo_menu || 'N/A'}, Invitati: ${data.numero_invitati || 'N/A'}, Importo: €${data.importo || '0'}`, this.debugLevels.INFO);
-                    
-                    // Update table row if exists
-                    this.updateTableRow(file.id, data, 'success');
-                }
-                
-                // Log any additional messages
-                if (response.data.log && Array.isArray(response.data.log)) {
-                    response.data.log.forEach(logEntry => {
-                        this.log(`  ${logEntry}`, this.debugLevels.DEBUG);
-                    });
-                }
-                
-            } else {
-                this.state.errorCount++;
-                
-                const errorMsg = response.data ? (response.data.error || 'Errore sconosciuto') : 'Risposta non valida';
-                
-                const result = {
-                    file: file,
-                    success: false,
-                    error: errorMsg
-                };
-                
-                this.state.results.push(result);
-                
-                this.log(`❌ File ${fileNumber} fallito: ${errorMsg}`, this.debugLevels.ERROR);
-                
-                // Update table row if exists
-                this.updateTableRow(file.id, null, 'error');
-            }
-        },
-        
-        // Handle file error
-        handleFileError: function(error, file, fileNumber, status) {
-            this.state.errorCount++;
-            
-            let errorMsg = error;
-            if (status === 'timeout') {
-                errorMsg = 'Timeout - il file richiede troppo tempo';
-            } else if (status === 'abort') {
-                errorMsg = 'Operazione annullata';
-                this.state.skipCount++;
-                this.state.errorCount--; // Don't count aborted as errors
-            }
-            
-            const result = {
-                file: file,
-                success: false,
-                error: errorMsg
-            };
-            
-            this.state.results.push(result);
-            
-            this.log(`❌ Errore file ${fileNumber}: ${errorMsg}`, this.debugLevels.ERROR);
-            
-            // Update table row if exists
-            this.updateTableRow(file.id, null, 'error');
-        },
-        
-        // Complete batch scan
-        completeBatchScan: function() {
-            this.state.isScanning = false;
-            this.stopElapsedTimer();
-            
-            const duration = Math.floor((Date.now() - this.state.startTime) / 1000);
-            const minutes = Math.floor(duration / 60);
-            const seconds = duration % 60;
-            
-            this.log('=== SCANSIONE COMPLETATA ===', this.debugLevels.INFO);
-            this.log(`Durata: ${minutes}m ${seconds}s`, this.debugLevels.INFO);
-            this.log(`Risultati: ${this.state.successCount} successi, ${this.state.errorCount} errori, ${this.state.skipCount} saltati`, this.debugLevels.INFO);
-            
-            // Update UI
-            $('#batch-status, #batch-current-file').text('Scansione completata!');
-            $('#stop-batch, #stop-batch-analysis').hide();
-            $('#pause-batch').hide();
-            $('#start-batch, #start-batch-analysis').show();
-            
-            // Show summary
-            this.showScanSummary();
-            
-            // Clear saved state
-            this.clearState();
-            
-            // Refresh table after a delay
-            const self = this;
-            setTimeout(function() {
-                self.refreshAnalysisTable();
-            }, 2000);
-        },
-        
-        // Stop batch scan
-        stopBatchScan: function() {
-            if (!this.state.isScanning) return;
-            
-            this.log('Scansione interrotta dall\'utente', this.debugLevels.WARNING);
-            
-            this.state.isScanning = false;
-            
-            // Abort current request if possible
-            if (this.state.abortController) {
-                this.state.abortController.abort();
-            }
-            
-            this.stopElapsedTimer();
-            
-            // Update UI
-            $('#batch-status, #batch-current-file').text('Scansione interrotta');
-            $('#stop-batch, #stop-batch-analysis').hide();
-            $('#pause-batch').hide();
-            $('#start-batch, #start-batch-analysis').show();
-            
-            // Show partial summary
-            this.showScanSummary();
-            
-            // Clear saved state
-            this.clearState();
-        },
-        
-        // Toggle pause scan
-        togglePauseScan: function() {
-            this.state.isPaused = !this.state.isPaused;
-            
-            if (this.state.isPaused) {
-                this.log('Scansione in pausa', this.debugLevels.WARNING);
-                $('#pause-batch').text('▶️ Riprendi');
-                $('#batch-status').text('In pausa...');
-            } else {
-                this.log('Scansione ripresa', this.debugLevels.INFO);
-                $('#pause-batch').text('⏸️ Pausa');
-            }
-        },
-        
-        // Scan single file
-        scanSingleFile: function(fileId, fileName) {
-            const self = this;
-            
-            this.log(`Scansione singola file: ${fileName}`, this.debugLevels.INFO);
-            
-            const $button = $(`.scan-single-file[data-file-id="${fileId}"]`);
-            const originalText = $button.text();
-            
-            $button.prop('disabled', true).text('Scansione...');
-            
-            $.ajax({
-                url: this.config.ajaxUrl,
-                type: 'POST',
-                data: {
-                    action: 'disco747_batch_scan_excel',
-                    nonce: this.config.nonce,
-                    file_id: fileId,
-                    file_name: fileName,
-                    file_path: '',
-                    current_index: 0,
-                    total_files: 1
-                },
-                timeout: 30000,
-                success: function(response) {
-                    if (response.success && response.data.ok) {
-                        self.log(`✅ File analizzato con successo`, self.debugLevels.SUCCESS);
-                        self.showNotification('File analizzato con successo', 'success');
-                        
-                        // Refresh table
-                        setTimeout(function() {
-                            self.refreshAnalysisTable();
-                        }, 1000);
-                    } else {
-                        const error = response.data ? response.data.error : 'Errore sconosciuto';
-                        self.log(`❌ Errore: ${error}`, self.debugLevels.ERROR);
-                        self.showNotification(`Errore: ${error}`, 'error');
-                    }
-                },
-                error: function(xhr, status, error) {
-                    self.log(`❌ Errore AJAX: ${error}`, self.debugLevels.ERROR);
-                    self.showNotification(`Errore: ${error}`, 'error');
-                },
-                complete: function() {
-                    $button.prop('disabled', false).text(originalText);
-                }
-            });
-        },
-        
-        // Update progress UI
-        updateProgressUI: function() {
-            const progress = this.state.totalFiles > 0 
-                ? (this.state.currentIndex / this.state.totalFiles) * 100 
-                : 0;
-            
-            $('#batch-current').text(this.state.currentIndex);
-            $('#batch-total').text(this.state.totalFiles);
-            $('#batch-success').text(this.state.successCount);
-            $('#batch-errors').text(this.state.errorCount);
-            $('#batch-progress-bar, .batch-progress-fill').css('width', progress + '%');
-            
-            // Update progress text
-            $('.batch-progress-text').text(`${this.state.currentIndex} / ${this.state.totalFiles} file processati`);
-        },
-        
-        // Update table row
-        updateTableRow: function(fileId, data, status) {
-            const $row = $(`#batch-results-table tr[data-file-id="${fileId}"], .batch-results-table tr[data-file-id="${fileId}"]`);
-            
-            if ($row.length === 0) return;
-            
-            // Update status column
-            const $statusCell = $row.find('.status-cell, td:last-child');
-            
-            let statusBadge = '';
-            switch(status) {
-                case 'success':
-                    statusBadge = '<span class="badge badge-success">✅ OK</span>';
-                    break;
-                case 'error':
-                    statusBadge = '<span class="badge badge-danger">❌ Errore</span>';
-                    break;
-                case 'processing':
-                    statusBadge = '<span class="badge badge-warning">⏳ In corso</span>';
-                    break;
-            }
-            
-            $statusCell.html(statusBadge);
-            
-            // Update data columns if available
-            if (data) {
-                if (data.data_evento) $row.find('.data-evento-cell').text(data.data_evento);
-                if (data.tipo_evento) $row.find('.tipo-evento-cell').text(data.tipo_evento);
-                if (data.tipo_menu) $row.find('.menu-cell').text(data.tipo_menu);
-                if (data.numero_invitati) $row.find('.invitati-cell').text(data.numero_invitati);
-                if (data.importo) $row.find('.importo-cell').text('€ ' + data.importo);
-            }
-        },
-        
-        // Start elapsed timer
-        startElapsedTimer: function() {
-            const self = this;
-            
-            this.state.elapsedTimer = setInterval(function() {
-                if (!self.state.isPaused) {
-                    const elapsed = Math.floor((Date.now() - self.state.startTime) / 1000);
-                    const minutes = Math.floor(elapsed / 60);
-                    const seconds = elapsed % 60;
-                    
-                    const timeStr = (minutes < 10 ? '0' : '') + minutes + ':' + (seconds < 10 ? '0' : '') + seconds;
-                    $('#batch-time, .batch-elapsed-time').text(timeStr);
-                }
-            }, 1000);
-        },
-        
-        // Stop elapsed timer
-        stopElapsedTimer: function() {
-            if (this.state.elapsedTimer) {
-                clearInterval(this.state.elapsedTimer);
-                this.state.elapsedTimer = null;
-            }
-        },
-        
-        // Show scan summary
-        showScanSummary: function() {
-            const summaryHtml = `
-                <div class="scan-summary" style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                    <h3 style="margin-top: 0;">📊 Riepilogo Scansione</h3>
-                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px;">
-                        <div style="text-align: center;">
-                            <div style="font-size: 2em; font-weight: bold; color: #28a745;">${this.state.successCount}</div>
-                            <div>Successi</div>
+            // Crea pannello debug fisso in cima
+            const panelHTML = `
+                <div id="iphone-debug-panel" style="
+                    position: fixed;
+                    top: 46px;
+                    left: 0;
+                    right: 0;
+                    background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+                    color: #00ff00;
+                    padding: 15px;
+                    font-family: 'Courier New', monospace;
+                    font-size: 13px;
+                    z-index: 999999;
+                    max-height: 250px;
+                    overflow-y: auto;
+                    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+                    border-bottom: 3px solid #00ff00;
+                ">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 8px;">
+                        <strong style="font-size: 16px; color: #00ff00;">🔍 DEBUG CONSOLE (iPhone)</strong>
+                        <div>
+                            <button id="debug-clear-btn" style="background: #dc3545; color: white; border: none; padding: 5px 10px; border-radius: 4px; margin-right: 5px; font-size: 12px;">🧹 Pulisci</button>
+                            <button id="debug-toggle-btn" style="background: #ffc107; color: black; border: none; padding: 5px 10px; border-radius: 4px; font-size: 12px;">👁️ Nascondi</button>
                         </div>
-                        <div style="text-align: center;">
-                            <div style="font-size: 2em; font-weight: bold; color: #dc3545;">${this.state.errorCount}</div>
-                            <div>Errori</div>
-                        </div>
-                        <div style="text-align: center;">
-                            <div style="font-size: 2em; font-weight: bold; color: #6c757d;">${this.state.skipCount}</div>
-                            <div>Saltati</div>
-                        </div>
-                        <div style="text-align: center;">
-                            <div style="font-size: 2em; font-weight: bold; color: #17a2b8;">${this.state.totalFiles}</div>
-                            <div>Totali</div>
-                        </div>
+                    </div>
+                    <div id="iphone-debug-content" style="line-height: 1.6;">
+                        <div style="color: #00ff00;">✅ Pannello debug inizializzato</div>
                     </div>
                 </div>
             `;
             
-            // Insert summary after progress bar
-            if ($('#scan-summary').length === 0) {
-                $('#batch-progress, .batch-progress-container').after('<div id="scan-summary"></div>');
-            }
+            $('body').prepend(panelHTML);
+            this.$panel = $('#iphone-debug-panel');
+            this.$content = $('#iphone-debug-content');
             
-            $('#scan-summary').html(summaryHtml);
+            // Binding pulsanti
+            $('#debug-clear-btn').on('click', () => {
+                this.$content.html('<div style="color: #ffc107;">🧹 Log pulito</div>');
+                this.logCount = 0;
+            });
+            
+            $('#debug-toggle-btn').on('click', () => {
+                const $content = this.$content;
+                if ($content.is(':visible')) {
+                    $content.hide();
+                    $('#debug-toggle-btn').text('👁️ Mostra');
+                } else {
+                    $content.show();
+                    $('#debug-toggle-btn').text('👁️ Nascondi');
+                }
+            });
+            
+            this.initialized = true;
+            this.log('DEBUG', 'Pannello debug pronto', 'success');
         },
         
-        // Show notification
-        showNotification: function(message, type = 'info') {
-            const typeClasses = {
-                success: 'notice-success',
-                error: 'notice-error',
-                warning: 'notice-warning',
-                info: 'notice-info'
+        log: function(category, message, type = 'info') {
+            if (!this.initialized) this.init();
+            
+            this.logCount++;
+            const timestamp = new Date().toLocaleTimeString('it-IT', { hour12: false });
+            
+            const colors = {
+                'info': '#00bfff',
+                'success': '#00ff00',
+                'warning': '#ffc107',
+                'error': '#ff4444',
+                'click': '#ff00ff',
+                'ajax': '#00ffff'
             };
             
-            const notificationHtml = `
-                <div class="notice ${typeClasses[type]} is-dismissible disco747-notification" style="display: none;">
-                    <p>${message}</p>
-                    <button type="button" class="notice-dismiss">
-                        <span class="screen-reader-text">Chiudi</span>
-                    </button>
+            const icons = {
+                'info': 'ℹ️',
+                'success': '✅',
+                'warning': '⚠️',
+                'error': '❌',
+                'click': '🖱️',
+                'ajax': '📡'
+            };
+            
+            const color = colors[type] || '#ffffff';
+            const icon = icons[type] || '📌';
+            
+            const logEntry = `
+                <div style="margin-bottom: 3px; padding: 6px 8px; background: rgba(255,255,255,0.05); border-left: 3px solid ${color}; border-radius: 3px;">
+                    <span style="color: #888; font-size: 11px;">[${timestamp}]</span>
+                    <span style="color: ${color}; font-weight: bold; margin-left: 8px;">${icon} ${category}</span>
+                    <span style="color: #ccc; margin-left: 8px;">${message}</span>
                 </div>
             `;
             
-            const $notification = $(notificationHtml);
+            this.$content.append(logEntry);
             
-            $('.wrap h1, .disco747-excel-scan-wrapper > div:first').after($notification);
+            // Auto-scroll
+            this.$content.scrollTop(this.$content[0].scrollHeight);
             
-            $notification.slideDown();
-            
-            // Auto-hide after 5 seconds
-            setTimeout(function() {
-                $notification.slideUp(function() {
-                    $(this).remove();
-                });
-            }, 5000);
-            
-            // Bind dismiss button
-            $notification.find('.notice-dismiss').on('click', function() {
-                $notification.slideUp(function() {
-                    $(this).remove();
-                });
-            });
-        },
-        
-        // Refresh analysis table
-        refreshAnalysisTable: function() {
-            this.log('Aggiornamento tabella analisi...', this.debugLevels.INFO);
-            
-            // Simple reload for now - could be enhanced with AJAX
-            location.reload();
-        },
-        
-        // Filter table
-        filterTable: function() {
-            const searchTerm = $('#search-analysis').val().toLowerCase();
-            const menuFilter = $('#filter-menu').val();
-            const statoFilter = $('#filter-stato').val();
-            
-            $('#analysis-tbody tr, #analysis-table tbody tr').each(function() {
-                const $row = $(this);
-                const text = $row.text().toLowerCase();
-                const menu = $row.find('td:eq(3)').text().trim();
-                const stato = $row.find('td:eq(7) .badge').text().trim();
-                
-                let show = true;
-                
-                if (searchTerm && !text.includes(searchTerm)) {
-                    show = false;
-                }
-                
-                if (menuFilter && !menu.includes(menuFilter)) {
-                    show = false;
-                }
-                
-                if (statoFilter && stato !== statoFilter) {
-                    show = false;
-                }
-                
-                $row.toggle(show);
-            });
-            
-            // Update count
-            const visibleRows = $('#analysis-tbody tr:visible, #analysis-table tbody tr:visible').length;
-            const totalRows = $('#analysis-tbody tr, #analysis-table tbody tr').length;
-            
-            this.log(`Filtro applicato: ${visibleRows} / ${totalRows} righe visibili`, this.debugLevels.INFO);
-        },
-        
-        // Log message
-        log: function(message, level = this.debugLevels.INFO) {
-            const timestamp = new Date().toLocaleTimeString();
-            const logEntry = `[${timestamp}] ${message}`;
-            
-            // Console log
-            switch(level) {
-                case this.debugLevels.ERROR:
-                    console.error(logEntry);
-                    break;
-                case this.debugLevels.WARNING:
-                    console.warn(logEntry);
-                    break;
-                case this.debugLevels.SUCCESS:
-                case this.debugLevels.INFO:
-                    console.log(logEntry);
-                    break;
-                case this.debugLevels.DEBUG:
-                    console.debug(logEntry);
-                    break;
+            // Limita log (max 100 righe)
+            if (this.logCount > 100) {
+                this.$content.find('div').first().remove();
+                this.logCount--;
             }
             
-            // Add to UI log
-            const $logContainer = $('#debug-log, #debug-log-content');
-            if ($logContainer.length > 0) {
-                const levelClass = level.replace('/', '-');
-                const $logEntry = $(`<div class="log-entry ${levelClass}">${logEntry}</div>`);
-                
-                $logContainer.append($logEntry);
-                
-                // Auto-scroll if enabled
-                if ($('#auto-scroll-log').is(':checked') !== false) {
-                    $logContainer.scrollTop($logContainer[0].scrollHeight);
-                }
-                
-                // Limit log entries to prevent memory issues
-                const $entries = $logContainer.find('.log-entry');
-                if ($entries.length > 1000) {
-                    $entries.slice(0, $entries.length - 1000).remove();
-                }
+            // Log anche in console normale
+            console.log(`[${timestamp}] [${category}] ${message}`);
+        },
+        
+        logStep: function(stepNumber, description) {
+            this.log(`STEP ${stepNumber}`, description, 'success');
+        },
+        
+        logError: function(context, error) {
+            this.log(context, `ERRORE: ${error}`, 'error');
+        },
+        
+        logClick: function(selector) {
+            this.log('CLICK', `Click rilevato su: ${selector}`, 'click');
+        },
+        
+        logAjax: function(action, status) {
+            this.log('AJAX', `${action} - ${status}`, 'ajax');
+        }
+    };
+
+    // ========================================================================
+    // OGGETTO EXCEL SCANNER CON DEBUG
+    // ========================================================================
+
+    const ExcelScanner = {
+        
+        currentPage: 1,
+        totalPages: 1,
+        currentSearch: '',
+        isLoading: false,
+        isBatchScanning: false,
+
+        config: {
+            maxRetries: 3,
+            retryDelay: 1000,
+            maxLogLines: 1000,
+            autoRefreshInterval: 30000
+        },
+
+        init: function() {
+            DebugPanel.logStep(1, 'Inizializzazione ExcelScanner...');
+            
+            if (!this.checkRequirements()) {
+                DebugPanel.logError('INIT', 'Requisiti mancanti');
+                return;
             }
+
+            DebugPanel.logStep(2, 'Requisiti OK - Binding eventi...');
+            this.bindEvents();
+            
+            DebugPanel.logStep(3, 'Eventi bindati - Inizializzazione UI...');
+            this.initUI();
+            
+            DebugPanel.logStep(4, 'ExcelScanner pronto!');
         },
-        
-        // Clear debug log
-        clearDebugLog: function() {
-            $('#debug-log, #debug-log-content').html('<div class="log-entry info">[' + new Date().toLocaleTimeString() + '] Log cleared</div>');
-            this.log('Log cleared', this.debugLevels.INFO);
-        },
-        
-        // Download debug log
-        downloadDebugLog: function() {
-            const $log = $('#debug-log, #debug-log-content');
-            const logContent = $log.text();
-            
-            const blob = new Blob([logContent], { type: 'text/plain' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            
-            a.href = url;
-            a.download = 'disco747-excel-scan-' + new Date().toISOString().slice(0, 10) + '.log';
-            
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-            window.URL.revokeObjectURL(url);
-            
-            this.log('Log scaricato', this.debugLevels.INFO);
-        },
-        
-        // Save state to localStorage
-        saveState: function() {
-            const stateToSave = {
-                currentIndex: this.state.currentIndex,
-                totalFiles: this.state.totalFiles,
-                successCount: this.state.successCount,
-                errorCount: this.state.errorCount,
-                skipCount: this.state.skipCount,
-                files: this.state.files,
-                results: this.state.results,
-                startTime: this.state.startTime
-            };
-            
-            try {
-                localStorage.setItem('disco747_excel_scan_state', JSON.stringify(stateToSave));
-            } catch(e) {
-                this.log('Impossibile salvare lo stato: ' + e.message, this.debugLevels.WARNING);
+
+        checkRequirements: function() {
+            if (typeof window.disco747ExcelScanData === 'undefined') {
+                DebugPanel.logError('REQUISITI', 'window.disco747ExcelScanData non trovato');
+                return false;
             }
-        },
-        
-        // Load stored state
-        loadStoredState: function() {
-            try {
-                const savedState = localStorage.getItem('disco747_excel_scan_state');
-                if (savedState) {
-                    const parsedState = JSON.parse(savedState);
-                    
-                    // Merge with current state
-                    $.extend(this.state, parsedState);
-                    
-                    this.log('Stato precedente caricato', this.debugLevels.INFO);
-                }
-            } catch(e) {
-                this.log('Impossibile caricare lo stato: ' + e.message, this.debugLevels.WARNING);
+
+            if (typeof $ === 'undefined') {
+                DebugPanel.logError('REQUISITI', 'jQuery non trovato');
+                return false;
             }
+
+            DebugPanel.log('REQUISITI', 'Tutti i requisiti soddisfatti', 'success');
+            DebugPanel.log('CONFIG', `ajaxurl: ${window.disco747ExcelScanData?.ajaxurl || 'N/D'}`, 'info');
+            DebugPanel.log('CONFIG', `nonce: ${window.disco747ExcelScanData?.nonce ? 'presente' : 'MANCANTE'}`, window.disco747ExcelScanData?.nonce ? 'success' : 'error');
+            DebugPanel.log('CONFIG', `gdriveAvailable: ${window.disco747ExcelScanData?.gdriveAvailable}`, 'info');
+            
+            return true;
         },
-        
-        // Clear state
-        clearState: function() {
-            try {
-                localStorage.removeItem('disco747_excel_scan_state');
-            } catch(e) {
-                // Ignore errors
+
+        initUI: function() {
+            this.updateUIState();
+            
+            if (typeof $.fn.tooltip === 'function') {
+                $('[data-toggle="tooltip"]').tooltip();
+            }
+
+            if (window.disco747ExcelScanData?.gdriveAvailable) {
+                $('#excel-search').focus();
             }
             
-            // Reset state
-            this.state = {
-                isScanning: false,
-                isPaused: false,
-                currentIndex: 0,
-                totalFiles: 0,
-                successCount: 0,
-                errorCount: 0,
-                skipCount: 0,
-                startTime: null,
-                elapsedTimer: null,
-                files: [],
-                results: [],
-                abortController: null
-            };
+            DebugPanel.log('UI', 'Interfaccia inizializzata', 'success');
         },
-        
-        // Show resume batch prompt
-        showResumeBatchPrompt: function() {
-            const remainingFiles = this.state.totalFiles - this.state.currentIndex;
+
+        updateUIState: function() {
+            const available = window.disco747ExcelScanData?.gdriveAvailable;
             
-            const message = `È stata trovata una scansione incompleta con ${remainingFiles} file rimanenti. Vuoi riprenderla?`;
-            
-            if (confirm(message)) {
-                this.state.isScanning = true;
-                this.state.isPaused = false;
-                
-                // Update UI
-                $('#start-batch, #start-batch-analysis').hide();
-                $('#stop-batch, #stop-batch-analysis').show();
-                $('#batch-progress, .batch-progress-container').slideDown();
-                
-                this.startElapsedTimer();
-                this.processNextFile();
-                
-                this.log('Scansione ripresa dal file ' + (this.state.currentIndex + 1), this.debugLevels.INFO);
+            if (!available) {
+                $('#excel-search, #manual-file-id').prop('disabled', true);
+                $('button[id*="btn"]:not(#refresh-all-btn)').prop('disabled', true);
+                $('#files-count').text('N/D - Google Drive non configurato');
+                DebugPanel.log('UI', 'Google Drive NON disponibile - UI disabilitata', 'warning');
             } else {
-                this.clearState();
-                this.log('Scansione precedente annullata', this.debugLevels.WARNING);
+                DebugPanel.log('UI', 'Google Drive disponibile - UI attiva', 'success');
+            }
+        },
+
+        bindEvents: function() {
+            DebugPanel.log('BINDING', 'Inizio binding eventi...', 'info');
+            
+            // ✅ CORRETTO: Pulsante batch scan con ID reale dalla pagina
+            const $batchBtn = $('#disco747-start-batch-scan');
+            if ($batchBtn.length === 0) {
+                DebugPanel.logError('BINDING', '#disco747-start-batch-scan NON TROVATO nel DOM!');
+            } else {
+                DebugPanel.log('BINDING', `#disco747-start-batch-scan TROVATO (${$batchBtn.length} elementi)`, 'success');
+                
+                $batchBtn.on('click', (e) => {
+                    DebugPanel.logClick('#disco747-start-batch-scan');
+                    DebugPanel.log('EVENT', 'Handler batch scan invocato', 'success');
+                    this.startBatchScan();
+                });
+                
+                DebugPanel.log('BINDING', 'Handler click collegato a #disco747-start-batch-scan', 'success');
+            }
+            
+            // Altri pulsanti
+            $('#search-files-btn').on('click', () => this.searchFiles());
+            $('#refresh-files-btn').on('click', () => this.refreshFiles());
+            $('#refresh-all-btn').on('click', () => this.refreshAll());
+            $('#analyze-manual-btn').on('click', () => this.analyzeManualId());
+            $('#clear-results-btn').on('click', () => this.clearResults());
+            
+            $('#toggle-log-btn').on('click', () => this.toggleLog());
+            $('#copy-log-btn').on('click', () => this.copyLogToClipboard());
+            $('#download-log-btn').on('click', () => this.downloadLog());
+            
+            $('#export-results-btn').on('click', () => this.exportResults());
+            
+            $('#prev-page-btn').on('click', () => this.prevPage());
+            $('#next-page-btn').on('click', () => this.nextPage());
+            
+            $('#excel-search').on('keypress', (e) => {
+                if (e.which === 13) this.searchFiles();
+            });
+
+            $('#manual-file-id').on('keypress', (e) => {
+                if (e.which === 13) this.analyzeManualId();
+            });
+
+            $('#manual-file-id').on('input', (e) => {
+                this.validateFileId($(e.target).val());
+            });
+
+            DebugPanel.log('BINDING', 'Tutti gli eventi collegati con successo', 'success');
+        },
+
+        /**
+         * FUNZIONE PRINCIPALE: Batch Scan
+         */
+        startBatchScan: function() {
+            DebugPanel.logStep('BATCH-1', 'Avvio batch scan...');
+            
+            if (this.isBatchScanning) {
+                DebugPanel.logError('BATCH', 'Batch scan già in corso');
+                alert('⚠️ Scansione batch già in corso');
+                return;
+            }
+            
+            if (!window.disco747ExcelScanData?.gdriveAvailable) {
+                DebugPanel.logError('BATCH', 'Google Drive non configurato');
+                alert('❌ Google Drive non configurato');
+                return;
+            }
+            
+            DebugPanel.logStep('BATCH-2', 'Stato verificato - preparazione dati AJAX...');
+            
+            // Stato UI
+            this.isBatchScanning = true;
+            $('#disco747-start-batch-scan').prop('disabled', true).text('🔄 Scansione in corso...');
+            
+            DebugPanel.logStep('BATCH-3', 'UI aggiornata - pulsante disabilitato');
+            
+            // Mostra progress se presente
+            const $progress = $('#batch-scan-progress');
+            if ($progress.length) {
+                $progress.show().find('.progress-bar').css('width', '0%');
+                DebugPanel.log('BATCH', 'Progress bar mostrata', 'info');
+            }
+            
+            // Preparazione dati AJAX
+            const ajaxData = {
+                action: 'disco747_scan_drive_batch',
+                nonce: window.disco747ExcelScanData?.nonce || '',
+                _wpnonce: window.disco747ExcelScanData?.nonce || ''
+            };
+            
+            DebugPanel.logStep('BATCH-4', 'Dati AJAX preparati');
+            DebugPanel.log('AJAX-DATA', `action: ${ajaxData.action}`, 'ajax');
+            DebugPanel.log('AJAX-DATA', `nonce: ${ajaxData.nonce ? 'presente' : 'MANCANTE'}`, ajaxData.nonce ? 'success' : 'error');
+            
+            const ajaxUrl = window.disco747ExcelScanData?.ajaxurl || ajaxurl;
+            DebugPanel.logStep('BATCH-5', `Invio richiesta AJAX a: ${ajaxUrl}`);
+            DebugPanel.logAjax('disco747_scan_drive_batch', 'INVIO...');
+            
+            // Chiamata AJAX
+            $.ajax({
+                url: ajaxUrl,
+                type: 'POST',
+                data: ajaxData,
+                timeout: 300000, // 5 minuti
+                beforeSend: function(xhr) {
+                    DebugPanel.log('AJAX', 'beforeSend - headers inviati', 'ajax');
+                },
+                success: (response) => {
+                    DebugPanel.logAjax('disco747_scan_drive_batch', 'SUCCESSO');
+                    DebugPanel.log('RESPONSE', JSON.stringify(response).substring(0, 200), 'success');
+                    this.handleBatchScanResponse(response);
+                },
+                error: (xhr, status, error) => {
+                    DebugPanel.logAjax('disco747_scan_drive_batch', 'ERRORE');
+                    DebugPanel.logError('AJAX', `status: ${status}, error: ${error}`);
+                    DebugPanel.logError('AJAX', `HTTP Status: ${xhr.status}`);
+                    DebugPanel.logError('AJAX', `Response: ${xhr.responseText.substring(0, 300)}`);
+                    this.handleBatchScanError(xhr, status, error);
+                },
+                complete: () => {
+                    this.isBatchScanning = false;
+                    $('#disco747-start-batch-scan').prop('disabled', false).text('🔄 Analizza Ora');
+                    DebugPanel.log('BATCH', 'Batch scan completato (complete callback)', 'info');
+                }
+            });
+            
+            DebugPanel.logStep('BATCH-6', 'Richiesta AJAX inviata - in attesa risposta...');
+        },
+
+        handleBatchScanResponse: function(response) {
+            DebugPanel.logStep('RESPONSE-1', 'Gestione risposta...');
+            DebugPanel.log('RESPONSE', `success: ${response.success}`, response.success ? 'success' : 'error');
+            
+            if (response.success) {
+                const data = response.data || {};
+                const found = data.found || 0;
+                const processed = data.processed || 0;
+                const inserted = data.inserted || 0;
+                const updated = data.updated || 0;
+                const errors = data.errors || 0;
+                
+                DebugPanel.log('RISULTATI', `Trovati: ${found}`, 'success');
+                DebugPanel.log('RISULTATI', `Processati: ${processed}`, 'success');
+                DebugPanel.log('RISULTATI', `Inseriti: ${inserted}`, 'success');
+                DebugPanel.log('RISULTATI', `Aggiornati: ${updated}`, 'success');
+                DebugPanel.log('RISULTATI', `Errori: ${errors}`, errors > 0 ? 'warning' : 'success');
+                
+                const message = `✅ Batch scan completato!\n\nFile trovati: ${found}\nProcessati: ${processed}\nNuovi: ${inserted}\nAggiornati: ${updated}\nErrori: ${errors}`;
+                
+                alert(message);
+                
+                // Mostra messaggi dettagliati se presenti
+                if (data.messages && Array.isArray(data.messages)) {
+                    data.messages.forEach(msg => {
+                        DebugPanel.log('SERVER-MSG', msg, 'info');
+                    });
+                }
+                
+                // Ricarica la pagina
+                DebugPanel.log('RELOAD', 'Ricaricamento pagina tra 2 secondi...', 'info');
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+                
+            } else {
+                const errorMsg = response.data || 'Errore sconosciuto durante il batch scan';
+                DebugPanel.logError('BATCH', errorMsg);
+                alert('❌ Errore batch scan: ' + errorMsg);
+            }
+        },
+
+        handleBatchScanError: function(xhr, status, error) {
+            let errorMessage = 'Errore di rete durante il batch scan';
+            
+            if (xhr.status === 403) {
+                errorMessage = 'Accesso negato - verifica i permessi';
+            } else if (xhr.status === 404) {
+                errorMessage = 'Endpoint non trovato';
+            } else if (xhr.status === 500) {
+                errorMessage = 'Errore del server';
+            } else if (status === 'timeout') {
+                errorMessage = 'Timeout - operazione troppo lunga';
+            }
+            
+            DebugPanel.logError('ERROR-DETAIL', errorMessage);
+            alert('❌ ' + errorMessage);
+        },
+
+        // ========================================================================
+        // FUNZIONI UTILITY (semplificate per debug)
+        // ========================================================================
+
+        validateFileId: function(fileId) {
+            const btn = $('#analyze-manual-btn');
+            const input = $('#manual-file-id');
+            
+            if (!fileId || fileId.length < 10) {
+                btn.prop('disabled', true);
+                input.removeClass('valid').addClass('invalid');
+                return false;
+            }
+            
+            const gdFileIdPattern = /^[a-zA-Z0-9_-]{25,50}$/;
+            
+            if (gdFileIdPattern.test(fileId)) {
+                btn.prop('disabled', false);
+                input.removeClass('invalid').addClass('valid');
+                return true;
+            } else {
+                btn.prop('disabled', true);
+                input.removeClass('valid').addClass('invalid');
+                return false;
+            }
+        },
+
+        analyzeManualId: function() {
+            const fileId = $('#manual-file-id').val().trim();
+            
+            if (!this.validateFileId(fileId)) {
+                alert('Inserisci un File ID valido');
+                $('#manual-file-id').focus().select();
+                return;
+            }
+            
+            DebugPanel.log('MANUAL', `Analisi manuale File ID: ${fileId}`, 'info');
+        },
+
+        searchFiles: function() {
+            const searchTerm = $('#excel-search').val().trim();
+            DebugPanel.log('SEARCH', `Ricerca: "${searchTerm}"`, 'info');
+            this.currentSearch = searchTerm;
+            this.currentPage = 1;
+        },
+
+        refreshFiles: function() {
+            DebugPanel.log('REFRESH', 'Refresh lista file', 'info');
+            this.currentPage = 1;
+        },
+
+        refreshAll: function() {
+            DebugPanel.log('REFRESH-ALL', 'Refresh completo', 'info');
+            this.currentSearch = '';
+            this.currentPage = 1;
+            $('#excel-search').val('');
+        },
+
+        clearResults: function() {
+            $('#analysis-results').hide();
+            $('#extracted-data-dashboard').empty();
+            DebugPanel.log('CLEAR', 'Risultati puliti', 'info');
+        },
+
+        toggleLog: function() {
+            const $logContent = $('#debug-log-content');
+            if ($logContent.length) {
+                $logContent.toggle();
+            }
+        },
+
+        copyLogToClipboard: function() {
+            DebugPanel.log('CLIPBOARD', 'Tentativo copia log', 'info');
+        },
+
+        downloadLog: function() {
+            DebugPanel.log('DOWNLOAD', 'Download log', 'info');
+        },
+
+        exportResults: function() {
+            DebugPanel.log('EXPORT', 'Export risultati', 'info');
+        },
+
+        prevPage: function() {
+            if (this.currentPage > 1) {
+                this.currentPage--;
+                DebugPanel.log('PAGINATION', `Pagina precedente: ${this.currentPage}`, 'info');
+            }
+        },
+
+        nextPage: function() {
+            if (this.currentPage < this.totalPages) {
+                this.currentPage++;
+                DebugPanel.log('PAGINATION', `Pagina successiva: ${this.currentPage}`, 'info');
             }
         }
     };
-    
-    // Initialize when document is ready
+
+    // ========================================================================
+    // INIZIALIZZAZIONE GLOBALE
+    // ========================================================================
+
+    // Espone oggetto globalmente
+    window.ExcelScanner = ExcelScanner;
+    window.DebugPanel = DebugPanel;
+
+    // Inizializzazione quando DOM è pronto
     $(document).ready(function() {
-        window.Disco747ExcelScan.init();
+        DebugPanel.init();
+        DebugPanel.logStep(0, 'jQuery Document Ready - START');
+        
+        // Verifica configurazione
+        if (typeof window.disco747ExcelScanData === 'undefined') {
+            DebugPanel.logError('FATAL', 'window.disco747ExcelScanData NON DEFINITO');
+            $('#disco747-alerts').html(
+                '<div class="alert alert-error">❌ Errore configurazione. Ricarica la pagina.</div>'
+            );
+            return;
+        }
+
+        // Inizializza l'applicazione
+        ExcelScanner.init();
+
+        // Test presenza pulsante con ID corretto
+        const $batchBtn = $('#disco747-start-batch-scan');
+        if ($batchBtn.length === 0) {
+            DebugPanel.logError('DOM-CHECK', '#disco747-start-batch-scan NON TROVATO dopo init');
+        } else {
+            DebugPanel.log('DOM-CHECK', `#disco747-start-batch-scan presente (${$batchBtn.length} elementi)`, 'success');
+            DebugPanel.log('DOM-CHECK', `Testo pulsante: "${$batchBtn.text()}"`, 'info');
+            DebugPanel.log('DOM-CHECK', `Pulsante visibile: ${$batchBtn.is(':visible')}`, $batchBtn.is(':visible') ? 'success' : 'warning');
+            DebugPanel.log('DOM-CHECK', `Pulsante abilitato: ${!$batchBtn.prop('disabled')}`, !$batchBtn.prop('disabled') ? 'success' : 'warning');
+        }
+
+        // Log completo configurazione
+        DebugPanel.log('FINAL-CHECK', '🎵 747 Disco Excel Scanner inizializzato', 'success');
+        DebugPanel.log('VERSION', '1.0.3-FIX-SELECTOR', 'info');
+        DebugPanel.log('TIMESTAMP', new Date().toISOString(), 'info');
     });
-    
+
 })(jQuery);
