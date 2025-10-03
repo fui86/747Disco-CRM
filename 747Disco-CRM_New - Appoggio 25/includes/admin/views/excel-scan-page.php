@@ -1,11 +1,13 @@
 <?php
 /**
  * Template per la pagina Scansione Excel Auto di 747 Disco CRM
- * INTERFACCIA COMPLETA - NON MODIFICA FUNZIONALITÀ ESISTENTI
+ * Analisi batch file Excel da Google Drive con tabella e azioni
  * 
  * @package    Disco747_CRM
  * @subpackage Admin/Views
  * @since      11.4.2
+ * @version    11.4.2
+ * @author     747 Disco Team
  */
 
 // Sicurezza: impedisce l'accesso diretto
@@ -18,739 +20,470 @@ if (!current_user_can('manage_options')) {
     wp_die('Non hai i permessi per accedere a questa pagina.');
 }
 
-// Carica dati dal database se disponibili
-$analysis_results = array();
-$total_analysis = 0;
-$confirmed_count = 0;
-$last_scan = 'Mai';
-$is_googledrive_configured = true; // Assumiamo sia configurato
+// Ottieni istanza database per statistiche
+$database = null;
+$stats = array(
+    'total_files' => 0,
+    'analyzed_success' => 0,
+    'analysis_errors' => 0,
+    'confirmed_count' => 0,
+    'last_scan' => 'Mai'
+);
 
-// Prova a caricare dati esistenti se il database ha la tabella
-global $wpdb;
-$excel_table = $wpdb->prefix . 'disco747_excel_analysis';
-$table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$excel_table}'") === $excel_table;
-
-if ($table_exists) {
-    $results = $wpdb->get_results(
-        "SELECT * FROM {$excel_table} ORDER BY created_at DESC LIMIT 100", 
-        OBJECT
-    );
-    
-    if ($results) {
-        $analysis_results = $results;
-        $total_analysis = count($results);
-        $confirmed_count = count(array_filter($results, function($item) {
-            return !empty($item->acconto) && $item->acconto > 0;
-        }));
+try {
+    $disco747_crm = disco747_crm();
+    if ($disco747_crm && $disco747_crm->is_initialized()) {
+        $database = $disco747_crm->get_database();
         
-        if (!empty($results)) {
-            $latest = $results[0];
-            if (isset($latest->updated_at)) {
-                $last_scan = date('d/m/Y H:i', strtotime($latest->updated_at));
+        // Carica statistiche dal database se disponibile
+        if ($database && method_exists($database, 'count_excel_analysis')) {
+            $stats['total_files'] = $database->count_excel_analysis();
+            $stats['analyzed_success'] = $database->count_excel_analysis(array('analysis_success' => 1));
+            $stats['analysis_errors'] = $database->count_excel_analysis(array('analysis_success' => 0));
+            
+            // Conta confermati (con acconto > 0)
+            global $wpdb;
+            $excel_table = $wpdb->prefix . 'disco747_excel_analysis';
+            $stats['confirmed_count'] = intval($wpdb->get_var(
+                "SELECT COUNT(*) FROM {$excel_table} WHERE acconto > 0"
+            ));
+            
+            // Ultima scansione
+            $last_record = $wpdb->get_var(
+                "SELECT MAX(created_at) FROM {$excel_table}"
+            );
+            if ($last_record) {
+                $stats['last_scan'] = date('d/m/Y H:i', strtotime($last_record));
             }
         }
     }
+} catch (Exception $e) {
+    error_log('[747Disco-ExcelPage] Errore caricamento stats: ' . $e->getMessage());
 }
+
+// Configurazione storage
+$storage_type = get_option('disco747_storage_type', 'googledrive');
+$storage_configured = false;
+
+if ($storage_type === 'googledrive') {
+    // Prova prima il nuovo sistema unificato
+    $gd_credentials = get_option('disco747_gd_credentials', array());
+    if (!empty($gd_credentials['refresh_token'])) {
+        $storage_configured = true;
+    } else {
+        // Fallback al sistema separato
+        $client_id = get_option('disco747_googledrive_client_id');
+        $client_secret = get_option('disco747_googledrive_client_secret');
+        $refresh_token = get_option('disco747_googledrive_refresh_token');
+        $storage_configured = !empty($client_id) && !empty($client_secret) && !empty($refresh_token);
+    }
+} else {
+    $dropbox_credentials = get_option('disco747_dropbox_credentials', array());
+    $storage_configured = !empty($dropbox_credentials['refresh_token']);
+}
+
 ?>
 
-<div class="wrap disco747-excel-scan">
-    <!-- CSS Integrato -->
-    <style>
-        .disco747-excel-scan {
-            background: #f1f1f1;
-            padding: 20px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        .disco747-header {
-            background: linear-gradient(135deg, #c28a4d 0%, #b8b1b3 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 15px;
-            margin-bottom: 30px;
-            text-align: center;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-        }
-        
-        .disco747-header h1 {
-            margin: 0;
-            font-size: 2.5rem;
-            font-weight: bold;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }
-        
-        .disco747-header p {
-            margin: 10px 0 0;
-            font-size: 1.2rem;
-            opacity: 0.9;
-        }
-        
-        .disco747-card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            margin-bottom: 25px;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.08);
-            border: 1px solid #e0e0e0;
-        }
-        
-        .disco747-status {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-        
-        .status-item {
-            text-align: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            flex: 1;
-            min-width: 180px;
-        }
-        
-        .status-value {
-            font-size: 2rem;
-            font-weight: bold;
-            color: #c28a4d;
-            margin: 5px 0;
-        }
-        
-        .status-label {
-            color: #666;
-            font-size: 0.9rem;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .disco747-button {
-            background: linear-gradient(135deg, #c28a4d 0%, #d4a574 100%);
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 8px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            box-shadow: 0 4px 15px rgba(194, 138, 77, 0.3);
-        }
-        
-        .disco747-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(194, 138, 77, 0.4);
-        }
-        
-        .disco747-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .disco747-button.loading {
-            opacity: 0.8;
-            cursor: not-allowed;
-            position: relative;
-        }
-        
-        .disco747-button.loading::after {
-            content: '';
-            position: absolute;
-            right: 10px;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 16px;
-            height: 16px;
-            border: 2px solid rgba(255,255,255,0.3);
-            border-top: 2px solid white;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        
-        @keyframes spin {
-            0% { transform: translateY(-50%) rotate(0deg); }
-            100% { transform: translateY(-50%) rotate(360deg); }
-        }
-        
-        .disco747-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-            background: white;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-        }
-        
-        .disco747-table thead {
-            background: linear-gradient(135deg, #c28a4d 0%, #b8b1b3 100%);
-            color: white;
-        }
-        
-        .disco747-table th,
-        .disco747-table td {
-            padding: 15px 12px;
-            text-align: left;
-            border-bottom: 1px solid #eee;
-        }
-        
-        .disco747-table th {
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            font-size: 0.9rem;
-        }
-        
-        .disco747-table tbody tr:hover {
-            background-color: #f8f9fa;
-            transition: background-color 0.2s ease;
-        }
-        
-        .status-badge {
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .status-confermato {
-            background: linear-gradient(135deg, #28a745, #34ce57);
-            color: white;
-        }
-        
-        .status-pending {
-            background: linear-gradient(135deg, #ffc107, #ffdb4d);
-            color: #000;
-        }
-        
-        .status-error {
-            background: linear-gradient(135deg, #dc3545, #ff4757);
-            color: white;
-        }
-        
-        .edit-button {
-            background: linear-gradient(135deg, #007bff, #0056b3);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s ease;
-            text-decoration: none;
-            display: inline-block;
-        }
-        
-        .edit-button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
-            color: white;
-            text-decoration: none;
-        }
-        
-        .filters-container {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-            align-items: end;
-        }
-        
-        .filter-group {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-        }
-        
-        .filter-group label {
-            font-weight: 600;
-            color: #333;
-            font-size: 0.9rem;
-        }
-        
-        .filter-group input,
-        .filter-group select {
-            padding: 10px 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 6px;
-            font-size: 0.9rem;
-            transition: border-color 0.2s ease;
-        }
-        
-        .filter-group input:focus,
-        .filter-group select:focus {
-            outline: none;
-            border-color: #c28a4d;
-        }
-        
-        .filters-buttons {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .filter-button {
-            padding: 10px 20px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9rem;
-            transition: all 0.2s ease;
-        }
-        
-        .filter-apply {
-            background: #28a745;
-            color: white;
-        }
-        
-        .filter-reset {
-            background: #6c757d;
-            color: white;
-        }
-        
-        .filter-button:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-        }
-        
-        .progress-container {
-            margin: 20px 0;
-            padding: 20px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            display: none;
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 20px;
-            background: #e9ecef;
-            border-radius: 10px;
-            overflow: hidden;
-            margin: 10px 0;
-        }
-        
-        .progress-fill {
-            height: 100%;
-            background: linear-gradient(135deg, #c28a4d 0%, #d4a574 100%);
-            width: 0%;
-            transition: width 0.3s ease;
-            border-radius: 10px;
-        }
-        
-        .progress-text {
-            text-align: center;
-            font-weight: 600;
-            color: #333;
-        }
-        
-        .log-container {
-            margin-top: 20px;
-            background: #000;
-            color: #00ff00;
-            padding: 15px;
-            border-radius: 8px;
-            font-family: 'Courier New', monospace;
-            max-height: 300px;
-            overflow-y: auto;
-            font-size: 0.8rem;
-            display: none;
-        }
-        
-        .log-line {
-            margin: 2px 0;
-            word-wrap: break-word;
-        }
-        
-        .log-error { color: #ff4757; }
-        .log-success { color: #2ed573; }
-        .log-warning { color: #ffa502; }
-        .log-info { color: #70a1ff; }
-        
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #666;
-        }
-        
-        .empty-state h3 {
-            color: #c28a4d;
-            margin-bottom: 10px;
-        }
-        
-        .empty-state p {
-            margin-bottom: 20px;
-        }
-        
-        /* Responsive Design */
-        @media (max-width: 768px) {
-            .disco747-status {
-                flex-direction: column;
-            }
-            
-            .status-item {
-                min-width: 100%;
-            }
-            
-            .filters-container {
-                flex-direction: column;
-            }
-            
-            .disco747-table {
-                font-size: 0.8rem;
-            }
-            
-            .disco747-table th,
-            .disco747-table td {
-                padding: 10px 8px;
-            }
-        }
-    </style>
+<div class="wrap disco747-excel-scan-page" style="background: #f8f9fa; margin: 0 -20px; padding: 20px;">
 
-    <!-- Header -->
-    <div class="disco747-header">
-        <h1>📊 Scansione Excel Auto</h1>
-        <p>Gestione automatizzata dei preventivi da Google Drive</p>
-    </div>
-    
-    <!-- Stato Sistema -->
-    <div class="disco747-card">
-        <div class="disco747-status">
-            <div class="status-item">
-                <div class="status-value" id="total-files"><?php echo esc_html($total_analysis); ?></div>
-                <div class="status-label">File Excel</div>
-            </div>
-            <div class="status-item">
-                <div class="status-value" id="analyzed-files"><?php echo esc_html($total_analysis); ?></div>
-                <div class="status-label">Analizzati</div>
-            </div>
-            <div class="status-item">
-                <div class="status-value" id="confirmed-files"><?php echo esc_html($confirmed_count); ?></div>
-                <div class="status-label">Confermati</div>
-            </div>
-            <div class="status-item">
-                <div class="status-value" id="last-scan"><?php echo esc_html($last_scan); ?></div>
-                <div class="status-label">Ultima Scansione</div>
-            </div>
+```
+<!-- Header 747 Disco Style -->
+<div style="background: linear-gradient(135deg, #2b1e1a 0%, #3c3c3c 100%); color: white; padding: 30px; border-radius: 15px; margin-bottom: 30px; box-shadow: 0 8px 25px rgba(0,0,0,0.3);">
+    <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+        <div>
+            <h1 style="margin: 0; font-size: 2.2rem; color: #c28a4d; text-shadow: 2px 2px 4px rgba(0,0,0,0.5);">
+                📊 Excel Auto Scan
+            </h1>
+            <p style="margin: 10px 0 0 0; color: #eeeae6; font-size: 1.1rem;">
+                Analisi automatica file Excel da <?php echo $storage_type === 'googledrive' ? 'Google Drive' : 'Dropbox'; ?>
+            </p>
+        </div>
+        <div style="text-align: right;">
+            <?php if ($storage_configured): ?>
+                <button id="disco747-start-batch-scan" class="button button-primary" style="background: #c28a4d; border: none; padding: 12px 24px; font-size: 16px; border-radius: 8px; box-shadow: 0 4px 15px rgba(194, 138, 77, 0.4);">
+                    🔄 Analizza Ora
+                </button>
+            <?php else: ?>
+                <div style="background: rgba(220, 53, 69, 0.2); padding: 15px; border-radius: 10px; border: 2px solid #dc3545;">
+                    <div style="color: #dc3545; font-weight: bold;">⚠️ Storage non configurato</div>
+                    <div style="font-size: 0.9rem; color: #eeeae6; margin-top: 5px;">
+                        <a href="<?php echo admin_url('admin.php?page=disco747-settings'); ?>" style="color: #c28a4d;">Configura ora</a>
+                    </div>
+                </div>
+            <?php endif; ?>
         </div>
     </div>
-    
-    <!-- Controlli Scansione -->
-    <div class="disco747-card">
-        <h2 style="margin-top: 0; color: #c28a4d;">🚀 Avvia Scansione</h2>
-        <p style="margin-bottom: 25px; color: #666;">
-            Clicca il pulsante per analizzare tutti i file Excel presenti su Google Drive e importare i dati dei preventivi.
-        </p>
-        
-        <button id="start-scan" class="disco747-button" data-nonce="<?php echo wp_create_nonce('disco747_excel_scan'); ?>">
-            📈 Avvia Scansione Completa
-        </button>
-        
-        <!-- Barra Progresso -->
-        <div id="progress-container" class="progress-container">
-            <div class="progress-text" id="progress-text">Preparazione...</div>
-            <div class="progress-bar">
-                <div class="progress-fill" id="progress-fill"></div>
-            </div>
-            <div style="font-size: 0.9rem; color: #666; text-align: center;" id="progress-details">
-                0 di 0 file processati
-            </div>
-        </div>
-        
-        <!-- Log Debug -->
-        <div id="log-container" class="log-container">
-            <div id="log-content"></div>
-        </div>
-        
-        <div style="margin-top: 15px;">
-            <button id="toggle-log" class="filter-button filter-apply" style="margin-right: 10px;">
-                👁️ Mostra Log
-            </button>
-            <button id="clear-log" class="filter-button filter-reset">
-                🗑️ Pulisci Log
-            </button>
-        </div>
-    </div>
-    
-    <!-- Filtri -->
-    <div class="disco747-card">
-        <h2 style="margin-top: 0; color: #c28a4d;">🔍 Filtri Ricerca</h2>
-        
-        <div class="filters-container">
-            <div class="filter-group">
-                <label for="search-input">Ricerca</label>
-                <input type="text" id="search-input" placeholder="Nome, evento, telefono...">
-            </div>
-            
-            <div class="filter-group">
-                <label for="menu-filter">Menu</label>
-                <select id="menu-filter">
-                    <option value="">Tutti i menu</option>
-                    <option value="Menu 7">Menu 7</option>
-                    <option value="Menu 74">Menu 74</option>
-                    <option value="Menu 747">Menu 747</option>
-                </select>
-            </div>
-            
-            <div class="filter-group">
-                <label for="status-filter">Stato</label>
-                <select id="status-filter">
-                    <option value="">Tutti gli stati</option>
-                    <option value="confirmed">Confermato</option>
-                    <option value="pending">In Attesa</option>
-                    <option value="error">Errore</option>
-                </select>
-            </div>
-            
-            <div class="filter-group">
-                <label for="date-from">Da Data</label>
-                <input type="date" id="date-from">
-            </div>
-            
-            <div class="filter-group">
-                <label for="date-to">A Data</label>
-                <input type="date" id="date-to">
-            </div>
-            
-            <div class="filters-buttons">
-                <button id="apply-filters" class="filter-button filter-apply">Applica</button>
-                <button id="reset-filters" class="filter-button filter-reset">Reset</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Tabella Risultati -->
-    <div class="disco747-card">
-        <h2 style="margin-top: 0; color: #c28a4d;">📋 Risultati Analisi</h2>
-        
-        <div id="loading-state" style="text-align: center; padding: 40px; display: none;">
-            <div style="font-size: 1.2rem; color: #666;">🔄 Caricamento risultati...</div>
-        </div>
-        
-        <?php if (empty($analysis_results)): ?>
-        <div id="empty-state" class="empty-state">
-            <h3>Nessun risultato trovato</h3>
-            <p>Avvia una scansione per vedere i preventivi importati da Google Drive.</p>
-            <button id="start-first-scan" class="disco747-button" data-nonce="<?php echo wp_create_nonce('disco747_excel_scan'); ?>">
-                📈 Avvia Prima Scansione
-            </button>
-        </div>
-        <?php else: ?>
-        <div id="results-table">
-            <table class="disco747-table">
-                <thead>
-                    <tr>
-                        <th>Data Evento</th>
-                        <th>Tipo Evento</th>
-                        <th>Nome</th>
-                        <th>Cognome</th>
-                        <th>Telefono</th>
-                        <th>Email</th>
-                        <th>Menu</th>
-                        <th>Importo</th>
-                        <th>Stato</th>
-                        <th>Azioni</th>
-                    </tr>
-                </thead>
-                <tbody id="results-tbody">
-                    <?php foreach ($analysis_results as $result): 
-                        $is_confirmed = !empty($result->acconto) && $result->acconto > 0;
-                        $status_class = $is_confirmed ? 'status-confermato' : 
-                                      ($result->analysis_success ? 'status-pending' : 'status-error');
-                        $status_text = $is_confirmed ? 'Confermato' : 
-                                     ($result->analysis_success ? 'In Attesa' : 'Errore');
-                    ?>
-                    <tr class="table-row" data-id="<?php echo esc_attr($result->id); ?>">
-                        <td><?php echo esc_html($result->data_evento ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->tipo_evento ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->nome_referente ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->cognome_referente ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->cellulare ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->email ?: 'N/A'); ?></td>
-                        <td><?php echo esc_html($result->tipo_menu ?: 'N/A'); ?></td>
-                        <td>€ <?php echo esc_html(number_format($result->importo ?: 0, 2)); ?></td>
-                        <td><span class="status-badge <?php echo esc_attr($status_class); ?>"><?php echo esc_html($status_text); ?></span></td>
-                        <td>
-                            <a href="<?php echo admin_url('admin.php?page=disco747-crm&tab=form_preventivo&source=excel_analysis&analysis_id=' . $result->id); ?>" 
-                               class="edit-button">
-                                ✏️ Modifica
-                            </a>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-        </div>
-        <?php endif; ?>
-    </div>
-
-    <!-- JavaScript -->
-    <script>
-        // Configurazione AJAX per WordPress
-        const disco747ExcelScan = {
-            ajaxurl: '<?php echo admin_url('admin-ajax.php'); ?>',
-            nonce: '<?php echo wp_create_nonce('disco747_excel_scan'); ?>',
-            
-            // Inizializzazione
-            init: function() {
-                this.bindEvents();
-                this.log('Interfaccia scansione Excel inizializzata', 'success');
-            },
-            
-            // Bind eventi
-            bindEvents: function() {
-                const startBtn = document.getElementById('start-scan');
-                const startFirstBtn = document.getElementById('start-first-scan');
-                
-                if (startBtn) startBtn.addEventListener('click', () => this.startScan());
-                if (startFirstBtn) startFirstBtn.addEventListener('click', () => this.startScan());
-                
-                document.getElementById('apply-filters')?.addEventListener('click', () => this.applyFilters());
-                document.getElementById('reset-filters')?.addEventListener('click', () => this.resetFilters());
-                document.getElementById('toggle-log')?.addEventListener('click', () => this.toggleLog());
-                document.getElementById('clear-log')?.addEventListener('click', () => this.clearLog());
-            },
-            
-            // Avvia scansione
-            startScan: function() {
-                const button = document.getElementById('start-scan') || document.getElementById('start-first-scan');
-                const progressContainer = document.getElementById('progress-container');
-                const progressFill = document.getElementById('progress-fill');
-                const progressText = document.getElementById('progress-text');
-                
-                if (!button) return;
-                
-                button.classList.add('loading');
-                button.textContent = '🔄 Scansione in corso...';
-                button.disabled = true;
-                
-                if (progressContainer) {
-                    progressContainer.style.display = 'block';
-                }
-                
-                this.log('Avvio scansione Excel da Google Drive...', 'info');
-                
-                // Simula scansione per ora - sostituire con chiamata AJAX reale
-                this.simulateScan(button, progressFill, progressText);
-            },
-            
-            // Simula scansione (da sostituire con AJAX reale)
-            simulateScan: function(button, progressFill, progressText) {
-                let progress = 0;
-                const interval = setInterval(() => {
-                    progress += Math.random() * 15;
-                    if (progress > 100) progress = 100;
-                    
-                    if (progressFill) progressFill.style.width = progress + '%';
-                    if (progressText) progressText.textContent = `Scansione in corso... ${Math.floor(progress)}%`;
-                    
-                    this.log(`Progresso: ${Math.floor(progress)}%`, 'info');
-                    
-                    if (progress >= 100) {
-                        clearInterval(interval);
-                        this.log('Scansione completata! Ricarica la pagina per vedere i risultati.', 'success');
-                        
-                        button.classList.remove('loading');
-                        button.textContent = '✅ Scansione Completata';
-                        button.disabled = false;
-                        
-                        setTimeout(() => {
-                            location.reload();
-                        }, 2000);
-                    }
-                }, 300);
-            },
-            
-            // Applica filtri
-            applyFilters: function() {
-                const search = document.getElementById('search-input').value.toLowerCase();
-                const menu = document.getElementById('menu-filter').value;
-                const status = document.getElementById('status-filter').value;
-                const dateFrom = document.getElementById('date-from').value;
-                const dateTo = document.getElementById('date-to').value;
-                
-                document.querySelectorAll('.table-row').forEach(row => {
-                    let show = true;
-                    
-                    if (search && !row.textContent.toLowerCase().includes(search)) {
-                        show = false;
-                    }
-                    
-                    if (menu && !row.textContent.includes(menu)) {
-                        show = false;
-                    }
-                    
-                    if (status) {
-                        const badge = row.querySelector('.status-badge');
-                        if (status === 'confirmed' && !badge?.classList.contains('status-confermato')) show = false;
-                        if (status === 'pending' && !badge?.classList.contains('status-pending')) show = false;
-                        if (status === 'error' && !badge?.classList.contains('status-error')) show = false;
-                    }
-                    
-                    row.style.display = show ? '' : 'none';
-                });
-                
-                this.log(`Filtri applicati: ricerca="${search}", menu="${menu}", stato="${status}"`, 'info');
-            },
-            
-            // Reset filtri
-            resetFilters: function() {
-                document.getElementById('search-input').value = '';
-                document.getElementById('menu-filter').value = '';
-                document.getElementById('status-filter').value = '';
-                document.getElementById('date-from').value = '';
-                document.getElementById('date-to').value = '';
-                
-                document.querySelectorAll('.table-row').forEach(row => {
-                    row.style.display = '';
-                });
-                
-                this.log('Filtri resettati', 'info');
-            },
-            
-            // Toggle log
-            toggleLog: function() {
-                const logContainer = document.getElementById('log-container');
-                const button = document.getElementById('toggle-log');
-                
-                if (logContainer.style.display === 'none' || !logContainer.style.display) {
-                    logContainer.style.display = 'block';
-                    button.textContent = '👁️ Nascondi Log';
-                } else {
-                    logContainer.style.display = 'none';
-                    button.textContent = '👁️ Mostra Log';
-                }
-            },
-            
-            // Pulisci log
-            clearLog: function() {
-                document.getElementById('log-content').innerHTML = '';
-                this.log('Log pulito', 'success');
-            },
-            
-            // Utility logging
-            log: function(message, type = 'info') {
-                const logContainer = document.getElementById('log-content');
-                if (!logContainer) return;
-                
-                const timestamp = new Date().toLocaleTimeString();
-                const logLine = document.createElement('div');
-                logLine.className = `log-line log-${type}`;
-                logLine.textContent = `[${timestamp}] ${message}`;
-                logContainer.appendChild(logLine);
-                logContainer.scrollTop = logContainer.scrollHeight;
-            }
-        };
-
-        // Inizializza quando DOM è pronto
-        document.addEventListener('DOMContentLoaded', function() {
-            disco747ExcelScan.init();
-        });
-    </script>
 </div>
+
+<!-- Statistiche in Evidenza -->
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px;">
+    
+    <div style="background: linear-gradient(135deg, #c28a4d 0%, #b8b1b3 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(194, 138, 77, 0.3);">
+        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-total"><?php echo number_format($stats['total_files']); ?></div>
+        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">📄 File Trovati</div>
+    </div>
+    
+    <div style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(40, 167, 69, 0.3);">
+        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-success"><?php echo number_format($stats['analyzed_success']); ?></div>
+        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">✅ Analizzati</div>
+    </div>
+    
+    <div style="background: linear-gradient(135deg, #17a2b8 0%, #6610f2 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(23, 162, 184, 0.3);">
+        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-confirmed"><?php echo number_format($stats['confirmed_count']); ?></div>
+        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">🎉 Confermati</div>
+    </div>
+    
+    <div style="background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); color: white; padding: 25px; border-radius: 15px; text-align: center; box-shadow: 0 6px 20px rgba(220, 53, 69, 0.3);">
+        <div style="font-size: 2.5rem; font-weight: bold; margin: 10px 0;" id="stats-errors"><?php echo number_format($stats['analysis_errors']); ?></div>
+        <div style="font-size: 1rem; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);">❌ Errori</div>
+    </div>
+</div>
+
+<!-- Progress Bar (nascosta inizialmente) -->
+<div id="disco747-scan-progress" style="display: none; background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+        <span style="font-weight: bold; color: #2b1e1a;">🔄 Scansione in corso...</span>
+        <span id="scan-progress-text" style="color: #c28a4d;">0%</span>
+    </div>
+    <div style="background: #e9ecef; border-radius: 10px; height: 8px; overflow: hidden;">
+        <div id="scan-progress-bar" style="background: linear-gradient(90deg, #c28a4d 0%, #b8b1b3 100%); height: 100%; width: 0%; transition: width 0.3s ease;"></div>
+    </div>
+    <div id="scan-status-message" style="margin-top: 10px; font-size: 0.9rem; color: #666;"></div>
+</div>
+
+<!-- Sezione Tabella Principale -->
+<div style="background: white; border-radius: 15px; box-shadow: 0 6px 20px rgba(0,0,0,0.1); overflow: hidden;">
+    
+    <!-- Header Tabella -->
+    <div style="background: linear-gradient(135deg, #2b1e1a 0%, #3c3c3c 100%); padding: 20px; border-bottom: 3px solid #c28a4d;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;">
+            <h2 style="margin: 0; color: #c28a4d; font-size: 1.5rem;">
+                📋 File Excel Analizzati
+            </h2>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <!-- Filtri -->
+                <select id="filter-menu" style="padding: 8px; border-radius: 5px; border: 1px solid #ccc;">
+                    <option value="">Tutti i Menu</option>
+                    <option value="7">Menu 7</option>
+                    <option value="74">Menu 74</option>
+                    <option value="747">Menu 747</option>
+                </select>
+                
+                <input type="text" id="search-excel" placeholder="Cerca nome, evento..." style="padding: 8px; border-radius: 5px; border: 1px solid #ccc; width: 200px;">
+                
+                <button id="refresh-table" class="button button-secondary" style="padding: 8px 16px;">
+                    🔄 Aggiorna
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Contenuto Tabella -->
+    <div style="padding: 20px;">
+        <div id="excel-table-container">
+            <!-- Tabella verrà caricata via AJAX -->
+            <div style="text-align: center; padding: 40px; color: #666;">
+                <div style="font-size: 3rem; margin-bottom: 20px;">📊</div>
+                <p>Clicca "Analizza Ora" per iniziare la scansione dei file Excel.</p>
+                <p style="font-size: 0.9rem; color: #999;">I dati verranno caricati automaticamente dopo la prima scansione.</p>
+            </div>
+        </div>
+        
+        <!-- Paginazione -->
+        <div id="excel-pagination" style="margin-top: 20px; text-align: center; display: none;">
+            <!-- Paginazione verrà inserita via AJAX -->
+        </div>
+    </div>
+</div>
+
+<!-- Sezione Debug (collassabile) -->
+<div style="background: white; border-radius: 15px; box-shadow: 0 6px 20px rgba(0,0,0,0.1); margin-top: 20px; overflow: hidden;">
+    <div style="background: #f8f9fa; padding: 15px; border-bottom: 1px solid #e9ecef; cursor: pointer;" onclick="toggleDebugSection()">
+        <div style="display: flex; align-items: center; justify-content: between;">
+            <h3 style="margin: 0; color: #2b1e1a; font-size: 1.2rem;">
+                🔧 Debug & Informazioni Sistema
+            </h3>
+            <span id="debug-toggle" style="float: right; color: #c28a4d; font-weight: bold;">▼</span>
+        </div>
+    </div>
+    
+    <div id="debug-content" style="padding: 20px; display: none;">
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px;">
+            
+            <!-- Info Ultima Scansione -->
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #c28a4d;">
+                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">📅 Ultima Scansione</h4>
+                <div id="last-scan-info">
+                    <p style="margin: 5px 0;"><strong>Data:</strong> <?php echo esc_html($stats['last_scan']); ?></p>
+                    <p style="margin: 5px 0;"><strong>File processati:</strong> <span id="debug-last-files">-</span></p>
+                    <p style="margin: 5px 0;"><strong>Tempo impiegato:</strong> <span id="debug-last-time">-</span></p>
+                </div>
+            </div>
+            
+            <!-- Info Storage -->
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #17a2b8;">
+                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">☁️ Storage</h4>
+                <p style="margin: 5px 0;"><strong>Tipo:</strong> <?php echo ucfirst($storage_type); ?></p>
+                <p style="margin: 5px 0;"><strong>Stato:</strong> 
+                    <span style="color: <?php echo $storage_configured ? '#28a745' : '#dc3545'; ?>; font-weight: bold;">
+                        <?php echo $storage_configured ? '✅ Configurato' : '❌ Non configurato'; ?>
+                    </span>
+                </p>
+                <p style="margin: 5px 0;"><strong>Cartella:</strong> /747-Preventivi/</p>
+            </div>
+            
+            <!-- Info Database -->
+            <div style="background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745;">
+                <h4 style="margin: 0 0 10px 0; color: #2b1e1a;">🗄️ Database</h4>
+                <p style="margin: 5px 0;"><strong>Tabella:</strong> wp_disco747_excel_analysis</p>
+                <p style="margin: 5px 0;"><strong>Record:</strong> <span id="debug-db-records"><?php echo number_format($stats['total_files']); ?></span></p>
+                <p style="margin: 5px 0;"><strong>Stato:</strong> 
+                    <span style="color: #28a745; font-weight: bold;">✅ Attivo</span>
+                </p>
+            </div>
+        </div>
+        
+        <!-- Log Attività Recente -->
+        <div style="margin-top: 20px; background: #f8f9fa; padding: 15px; border-radius: 10px;">
+            <h4 style="margin: 0 0 15px 0; color: #2b1e1a;">📝 Log Attività Recente</h4>
+            <div id="activity-log" style="background: #2b1e1a; color: #00ff00; padding: 15px; border-radius: 5px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto;">
+                <div>[<?php echo date('Y-m-d H:i:s'); ?>] Excel Scan Page caricata</div>
+                <div>[<?php echo date('Y-m-d H:i:s'); ?>] Statistiche aggiornate: <?php echo $stats['total_files']; ?> file trovati</div>
+                <div style="color: #c28a4d;">[Sistema] Pronto per nuova scansione</div>
+            </div>
+        </div>
+    </div>
+</div>
+```
+
+</div>
+
+<!-- Modal per Errori Dettagliati (nascosto inizialmente) -->
+
+<div id="error-details-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 9999;">
+    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 30px; border-radius: 15px; max-width: 600px; width: 90%;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h3 style="margin: 0; color: #2b1e1a;">🚨 Dettagli Errore</h3>
+            <button onclick="closeErrorModal()" style="background: none; border: none; font-size: 24px; cursor: pointer;">×</button>
+        </div>
+        <div id="error-details-content" style="background: #f8f9fa; padding: 15px; border-radius: 10px; font-family: monospace; max-height: 300px; overflow-y: auto;">
+            <!-- Contenuto errore verrà inserito via JS -->
+        </div>
+        <div style="margin-top: 20px; text-align: right;">
+            <button onclick="closeErrorModal()" class="button button-primary">Chiudi</button>
+        </div>
+    </div>
+</div>
+
+<script>
+// Variabili globali
+let isScanning = false;
+let currentPage = 1;
+let totalPages = 1;
+
+// Toggle sezione debug
+function toggleDebugSection() {
+    const content = document.getElementById('debug-content');
+    const toggle = document.getElementById('debug-toggle');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        toggle.textContent = '▲';
+    } else {
+        content.style.display = 'none';
+        toggle.textContent = '▼';
+    }
+}
+
+// Chiudi modal errore
+function closeErrorModal() {
+    document.getElementById('error-details-modal').style.display = 'none';
+}
+
+// Mostra errori dettagliati
+function showErrorDetails(errors) {
+    const modal = document.getElementById('error-details-modal');
+    const content = document.getElementById('error-details-content');
+    
+    if (typeof errors === 'string') {
+        content.innerHTML = '<div style="color: #dc3545;">' + errors + '</div>';
+    } else {
+        content.innerHTML = '<pre style="white-space: pre-wrap; color: #dc3545;">' + JSON.stringify(errors, null, 2) + '</pre>';
+
+```
+}
+
+modal.style.display = 'block';
+```
+
+}
+
+// Aggiungi log attività
+function addActivityLog(message, type = ‘info’) {
+const log = document.getElementById(‘activity-log’);
+const timestamp = new Date().toLocaleString(‘it-IT’);
+const color = type === ‘error’ ? ‘#ff6b6b’ : type === ‘success’ ? ‘#51cf66’ : ‘#00ff00’;
+
+```
+const logEntry = document.createElement('div');
+logEntry.style.color = color;
+logEntry.innerHTML = `[${timestamp}] ${message}`;
+
+log.appendChild(logEntry);
+log.scrollTop = log.scrollHeight;
+```
+
+}
+
+// Aggiorna statistiche
+function updateStats(data) {
+if (data.stats) {
+document.getElementById(‘stats-total’).textContent = Number(data.stats.total_files || 0).toLocaleString();
+document.getElementById(‘stats-success’).textContent = Number(data.stats.analyzed_success || 0).toLocaleString();
+document.getElementById(‘stats-confirmed’).textContent = Number(data.stats.confirmed_count || 0).toLocaleString();
+document.getElementById(‘stats-errors’).textContent = Number(data.stats.analysis_errors || 0).toLocaleString();
+
+```
+    // Aggiorna debug
+    document.getElementById('debug-db-records').textContent = Number(data.stats.total_files || 0).toLocaleString();
+}
+```
+
+}
+
+// Inizializzazione quando il DOM è pronto
+document.addEventListener(‘DOMContentLoaded’, function() {
+// Carica tabella iniziale
+loadExcelTable();
+
+```
+// Event listeners
+setupEventListeners();
+
+addActivityLog('Interfaccia Excel Scan inizializzata', 'success');
+```
+
+});
+
+// Setup event listeners
+function setupEventListeners() {
+// Pulsante scansione principale
+const scanButton = document.getElementById(‘disco747-start-batch-scan’);
+if (scanButton) {
+scanButton.addEventListener(‘click’, startBatchScan);
+}
+
+```
+// Filtri e ricerca
+document.getElementById('filter-menu')?.addEventListener('change', loadExcelTable);
+document.getElementById('search-excel')?.addEventListener('input', debounce(loadExcelTable, 500));
+document.getElementById('refresh-table')?.addEventListener('click', loadExcelTable);
+```
+
+}
+
+// Debounce function per la ricerca
+function debounce(func, wait) {
+let timeout;
+return function executedFunction(…args) {
+const later = () => {
+clearTimeout(timeout);
+func(…args);
+};
+clearTimeout(timeout);
+timeout = setTimeout(later, wait);
+};
+}
+
+// Placeholder per le funzioni AJAX - verranno implementate nel file JS separato
+function startBatchScan() {
+console.log(‘Batch scan avviato - implementazione nel file excel-scan.js’);
+addActivityLog(‘Scansione batch richiesta - caricamento excel-scan.js…’, ‘info’);
+}
+
+function loadExcelTable() {
+console.log(‘Caricamento tabella richiesto - implementazione nel file excel-scan.js’);
+}
+</script>
+
+<style>
+/* Stili CSS specifici per la pagina Excel Scan */
+.disco747-excel-scan-page .button:hover {
+    transform: translateY(-2px);
+    transition: all 0.3s ease;
+}
+
+.disco747-excel-scan-page table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.disco747-excel-scan-page table th,
+.disco747-excel-scan-page table td {
+    padding: 12px 8px;
+    border-bottom: 1px solid #e9ecef;
+    text-align: left;
+}
+
+.disco747-excel-scan-page table th {
+    background: #f8f9fa;
+    font-weight: bold;
+    color: #2b1e1a;
+    border-bottom: 2px solid #c28a4d;
+}
+
+.disco747-excel-scan-page table tr:hover {
+    background: #f8f9fa;
+}
+
+.disco747-excel-scan-page .status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.disco747-excel-scan-page .status-conf {
+    background: #d4edda;
+    color: #155724;
+}
+
+.disco747-excel-scan-page .status-no {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.disco747-excel-scan-page .status-pending {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.disco747-excel-scan-page .btn-modifica {
+    background: #c28a4d;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+.disco747-excel-scan-page .btn-modifica:hover {
+    background: #a67b42;
+    color: white;
+}
+
+@media (max-width: 768px) {
+    .disco747-excel-scan-page table {
+        font-size: 12px;
+    }
+    
+    .disco747-excel-scan-page table th,
+    .disco747-excel-scan-page table td {
+        padding: 8px 4px;
+    }
+}
+</style>
