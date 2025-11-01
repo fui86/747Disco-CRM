@@ -189,6 +189,38 @@ class Disco747_Dashboard {
     }
 
     /**
+     * Genera un saluto formale per l'utente
+     *
+     * @since 1.0.0
+     * @param string $current_user Nome utente corrente
+     * @return string Saluto formale
+     */
+    private function get_formal_greeting($current_user) {
+        $hour = (int) date('H');
+        $time_of_day = '';
+        
+        // Determina il periodo della giornata per il saluto appropriato
+        if ($hour >= 5 && $hour < 12) {
+            $time_of_day = __('Buongiorno', 'disco747');
+        } elseif ($hour >= 12 && $hour < 18) {
+            $time_of_day = __('Buon pomeriggio', 'disco747');
+        } elseif ($hour >= 18 && $hour < 22) {
+            $time_of_day = __('Buonasera', 'disco747');
+        } else {
+            $time_of_day = __('Buonasera', 'disco747');
+        }
+        
+        // Costruisce il saluto formale
+        $formal_greeting = sprintf(
+            __('%s, Egregio Signore/Egregia Signora %s. È un piacere averLa qui oggi.', 'disco747'),
+            $time_of_day,
+            esc_html($current_user)
+        );
+        
+        return $formal_greeting;
+    }
+
+    /**
      * Renderizza header della dashboard
      *
      * @since 1.0.0
@@ -216,7 +248,7 @@ class Disco747_Dashboard {
         // Info utente e azioni
         echo '<div class="disco747-header-actions">';
         echo '<div class="disco747-user-info">';
-        echo '<span class="disco747-user-welcome">' . sprintf(__('Ciao, %s!', 'disco747'), esc_html($current_user)) . '</span>';
+        echo '<span class="disco747-user-welcome">' . $this->get_formal_greeting($current_user) . '</span>';
         echo '<span class="disco747-storage-info">' . $storage_label . ' 📁</span>';
         echo '</div>';
         
